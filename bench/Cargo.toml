@@ -1,0 +1,20 @@
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2024"
+description = "Medición del validador en streaming frente a la línea base DOM + validador genérico"
+
+[dependencies]
+validador = { path = "../validador" }
+serde = "1"
+# unbounded_depth: permite medir documentos más profundos que el límite de recursión por defecto (128)
+serde_json = { version = "1", features = ["unbounded_depth"] }
+# sin las funciones por defecto: no hace falta resolver referencias remotas por HTTP
+jsonschema = { version = "0.61", default-features = false }
+# línea base de XML: construye el árbol del documento (no valida contra el XSD)
+roxmltree = "0.20"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

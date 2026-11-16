@@ -1,0 +1,29 @@
+# Aplicación web con una base de datos MongoDB al lado, para probar en local o en una máquina virtual.
+#
+#   docker compose up --build -d
+#   docker compose run --rm app /venv/bin/python -m web.backend.sembrar     # carga los casos de la propuesta
+#
+# Para usar MongoDB Atlas en lugar del contenedor «mongo», define MONGODB_URI con la cadena de conexión
+# de Atlas (por ejemplo en un archivo .env junto a este) y arranca solo el servicio app:
+#
+#   docker compose up --build -d app
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGODB_DB: ${MONGODB_DB:-validador}
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - datos-mongo:/data/db
+    restart: unless-stopped
+
+volumes:
+  datos-mongo:

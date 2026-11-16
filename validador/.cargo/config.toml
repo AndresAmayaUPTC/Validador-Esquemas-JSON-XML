@@ -1,0 +1,5 @@
+# El enlazador de la variante GNU de Rust en Windows no abre rutas con caracteres no ASCII, y
+# «Código» tiene tilde. Por eso la carpeta de compilación se saca a la raíz del proyecto:
+# Proyecto/.cargo-target (la ruta es relativa a la carpeta validador/).
+[build]
+target-dir = "../../.cargo-target"

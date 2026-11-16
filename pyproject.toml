@@ -1,0 +1,22 @@
+[project]
+name = "compilador"
+version = "0.1.0"
+description = "Compilador de esquemas JSON/XML a autómatas de pila deterministas ponderados"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "pymongo>=4.6"]
+# jsonschema y xmlschema son los oráculos de las pruebas de los autómatas; mongomock y wasmtime prueban el almacén y el sandbox
+dev = ["pytest>=8", "jsonschema>=4.20", "xmlschema>=4", "fastapi>=0.110", "uvicorn[standard]>=0.29", "pymongo>=4.6",
+       "httpx>=0.27", "mongomock>=4.1", "wasmtime>=20"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["compilador*"]
+
+[tool.pytest.ini_options]
+testpaths = ["pruebas"]
+pythonpath = ["."]

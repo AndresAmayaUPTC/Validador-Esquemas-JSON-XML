@@ -1,0 +1,4 @@
+# Dependencias del backend en ejecución (las de pruebas están en pyproject.toml).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pymongo>=4.6

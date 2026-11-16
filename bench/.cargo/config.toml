@@ -1,0 +1,4 @@
+# La carpeta de compilación va fuera de «Código» por la misma razón que en validador/:
+# el enlazador de la variante GNU no abre rutas con tilde.
+[build]
+target-dir = "../../.cargo-target/bench"

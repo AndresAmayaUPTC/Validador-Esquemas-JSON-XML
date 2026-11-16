@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="pedido">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="cliente" type="xs:string"/>
+        <xs:element name="linea" type="Linea" maxOccurs="unbounded"/>
+        <xs:element name="nota" type="xs:string" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="id" type="xs:positiveInteger" use="required"/>
+      <xs:attribute name="estado" type="Estado"/>
+    </xs:complexType>
+  </xs:element>
+  <xs:complexType name="Linea">
+    <xs:sequence>
+      <xs:element name="producto">
+        <xs:simpleType>
+          <xs:restriction base="xs:string"><xs:minLength value="1"/><xs:maxLength value="40"/></xs:restriction>
+        </xs:simpleType>
+      </xs:element>
+      <xs:element name="precio" type="Precio"/>
+    </xs:sequence>
+    <xs:attribute name="cantidad" type="xs:positiveInteger" use="required"/>
+  </xs:complexType>
+  <xs:complexType name="Precio">
+    <xs:simpleContent>
+      <xs:extension base="Importe"><xs:attribute name="moneda" type="xs:string" use="required"/></xs:extension>
+    </xs:simpleContent>
+  </xs:complexType>
+  <xs:simpleType name="Importe">
+    <xs:restriction base="xs:decimal"><xs:minInclusive value="0"/><xs:maxExclusive value="1000000"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="Estado">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="nuevo"/><xs:enumeration value="pagado"/><xs:enumeration value="enviado"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>

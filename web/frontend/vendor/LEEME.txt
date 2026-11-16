@@ -1,0 +1,3 @@
+viz.js: @viz-js/viz 3.31.0 (Graphviz compilado a WebAssembly), licencia MIT.
+https://github.com/mdaines/viz-js
+Se incluye aqui para que la aplicacion funcione sin conexion a Internet.

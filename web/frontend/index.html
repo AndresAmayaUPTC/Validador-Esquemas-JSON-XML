@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Validador de esquemas con autómatas de pila</title>
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <header class="cabecera">
+    <h1>Validación de esquemas JSON y XML con autómatas de pila ponderados</h1>
+    <!-- La definición formal del autómata hace de barra de estado: se rellena al compilar. -->
+    <p class="definicion" id="definicion" aria-live="polite">
+      <i>M</i> = (<i>Q</i>, Σ, Γ, δ, <i>q</i><sub>0</sub>, <i>Z</i><sub>0</sub>, <i>F</i>, <i>w</i>)
+      <span class="tamanos" id="tamanos">Compila un esquema para construir <i>M</i>.</span>
+    </p>
+    <p class="servidor" id="servidor"></p>
+  </header>
+
+  <main class="mesa">
+    <section class="entradas" aria-label="Esquema y documento">
+      <div class="editor">
+        <div class="barra">
+          <h2><label for="esquema">Esquema</label></h2>
+          <select id="formato" aria-label="Formato: JSON Schema o XSD" title="El formato se reconoce solo al compilar; aquí se eligen los ejemplos">
+            <option value="json">JSON Schema</option><option value="xml">XML (XSD)</option></select>
+          <select id="ejemplos" aria-label="Cargar un ejemplo"><option value="">Cargar un ejemplo…</option></select>
+          <button class="principal" id="compilar" title="Ctrl + Enter">Compilar</button>
+        </div>
+        <textarea id="esquema" spellcheck="false" autocomplete="off" aria-describedby="aviso-esquema"></textarea>
+        <p class="aviso" id="aviso-esquema" role="status"></p>
+      </div>
+      <div class="editor">
+        <div class="barra">
+          <h2><label for="documento">Documento</label></h2>
+          <button id="validar" title="Ctrl + Enter">Validar</button>
+          <button id="streaming">Validar por bloques</button>
+        </div>
+        <textarea id="documento" spellcheck="false" autocomplete="off" aria-describedby="aviso-documento"></textarea>
+        <p class="aviso" id="aviso-documento" role="status"></p>
+      </div>
+    </section>
+
+    <section class="fases" aria-label="Resultados">
+      <div class="pestanas" role="tablist" aria-label="Fases">
+        <button role="tab" id="t-analisis" aria-controls="p-analisis" aria-selected="true">Análisis</button>
+        <button role="tab" id="t-automata" aria-controls="p-automata" aria-selected="false" tabindex="-1">Autómata</button>
+        <button role="tab" id="t-validacion" aria-controls="p-validacion" aria-selected="false" tabindex="-1">Validación</button>
+        <button role="tab" id="t-arbol" aria-controls="p-arbol" aria-selected="false" tabindex="-1">Árbol de derivación</button>
+        <button role="tab" id="t-comparacion" aria-controls="p-comparacion" aria-selected="false" tabindex="-1">Comparación</button>
+        <button role="tab" id="t-casos" aria-controls="p-casos" aria-selected="false" tabindex="-1">Casos de prueba</button>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-analisis" aria-labelledby="t-analisis">
+        <p class="vacio">Escribe o carga un esquema y pulsa <b>Compilar</b>. Aquí aparecen los diagnósticos, la tabla de
+          símbolos y la clasificación de cada palabra clave.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-automata" aria-labelledby="t-automata" hidden>
+        <p class="vacio">El autómata se construye al compilar el esquema.</p>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-validacion" aria-labelledby="t-validacion" hidden>
+        <div class="controles">
+          <label>Bloque <select id="bloque">
+            <option value="1">1 byte</option><option value="4" selected>4 bytes</option><option value="16">16 bytes</option>
+            <option value="64">64 bytes</option><option value="1024">1 KB</option><option value="65536">64 KB</option>
+          </select></label>
+          <label>Pausa entre bloques <select id="pausa">
+            <option value="0">ninguna</option><option value="25">25 ms</option><option value="100" selected>100 ms</option>
+            <option value="400">400 ms</option>
+          </select></label>
+          <label><input type="checkbox" id="temprano"> Detener en la primera violación</label>
+          <button id="wasm" hidden>Validar con WebAssembly en este navegador</button>
+        </div>
+        <div id="maquina" class="maquina" hidden>
+          <div class="cinta-caja">
+            <h3>Cinta de entrada</h3>
+            <div class="cinta" id="cinta" aria-label="Documento, con la parte ya leída atenuada"></div>
+            <dl class="contadores" id="contadores"></dl>
+          </div>
+          <div class="pila-caja">
+            <h3>Pila</h3>
+            <ol class="pila" id="pila" aria-label="Pila del autómata, con la cima arriba"></ol>
+          </div>
+        </div>
+        <div id="veredicto">
+          <p class="vacio">Pulsa <b>Validar</b> para obtener el veredicto, o <b>Validar por bloques</b> para ver cómo el
+            autómata lee el documento y mueve su pila.</p>
+        </div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-arbol" aria-labelledby="t-arbol" hidden>
+        <div class="controles">
+          <button id="derivar">Derivar el documento</button>
+          <button id="derivar-esquema">Derivar el esquema</button>
+        </div>
+        <div id="arbol"><p class="vacio">El árbol muestra qué producciones de la gramática generan el texto. Con textos de
+          más de 250 tokens no se dibuja.</p></div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-comparacion" aria-labelledby="t-comparacion" hidden>
+        <div class="controles">
+          <label>Rondas <select id="rondas"><option>5</option><option selected>10</option><option>20</option></select></label>
+          <button class="principal" id="comparar">Medir</button>
+        </div>
+        <div id="comparacion"><p class="vacio">Mide el documento actual con el autómata de pila y con la línea base, que
+          construye el árbol completo (<code>serde_json</code>) y lo valida (<code>jsonschema</code>). Con XML la línea
+          base solo construye el árbol (<code>roxmltree</code>): no hay un validador de XSD comparable, así que hace
+          menos trabajo que el autómata. Cada ronda aparece en cuanto termina.</p></div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-casos" aria-labelledby="t-casos" hidden>
+        <div class="controles">
+          <label>Categoría <select id="categoria"><option value="">todas</option></select></label>
+          <button id="ejecutar-todos">Ejecutar todos</button>
+          <button id="generar">Generar casos desde el esquema</button>
+        </div>
+        <form class="guardar" id="guardar">
+          <label>Guardar el esquema y el documento actuales como
+            <input id="nombre-caso" required maxlength="120" placeholder="nombre del caso"></label>
+          <select id="categoria-caso" aria-label="Categoría del caso nuevo"></select>
+          <button>Guardar caso</button>
+        </form>
+        <div id="casos"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+ "etiqueta": "carga sostenida",
+ "bytes": 228014,
+ "bloque": 65536,
+ "automata": {
+  "estados": 47,
+  "transiciones": 62,
+  "simbolos_de_pila": 7
+ },
+ "streaming": {
+  "ns": 1780300.0,
+  "mb_s": 128.08,
+  "ciclos_por_byte": 14.027,
+  "asignaciones": 0,
+  "pico_heap": 0,
+  "repeticiones": 163,
+  "estado": "valido",
+  "violaciones": 0,
+  "profundidad": 3,
+  "memoria_fija": 1448,
+  "memoria_por_nivel": 48,
+  "memoria_usada": 1592
+ },
+ "dom_parseo": {
+  "ns": 2818300.0,
+  "mb_s": 80.9,
+  "ciclos_por_byte": 22.205,
+  "asignaciones": 20809,
+  "pico_heap": 1525614,
+  "repeticiones": 97,
+  "ok": true
+ },
+ "dom": {
+  "ns": 2866500.0,
+  "mb_s": 79.54,
+  "ciclos_por_byte": 22.585,
+  "asignaciones": 20809,
+  "pico_heap": 1525614,
+  "repeticiones": 93,
+  "estado": "valido"
+ },
+ "sostenida": {
+  "segundos": 3.03,
+  "documentos": 1629,
+  "validos": 1629,
+  "mb_s_min": 115.66,
+  "mb_s_mediana": 123.21,
+  "mb_s_max": 125.68,
+  "asignaciones": 0
+ }
+}
