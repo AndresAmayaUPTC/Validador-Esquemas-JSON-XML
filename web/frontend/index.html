@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="cabecera">
-    <h1>Validación de esquemas JSON y XML con autómatas de pila ponderados</h1>
+    <h1><span class="sello" aria-hidden="true" title="Lenguajes Formales · UPTC">ΛF</span>Validación de esquemas JSON y XML con autómatas de pila ponderados</h1>
     <!-- La definición formal del autómata hace de barra de estado: se rellena al compilar. -->
     <p class="definicion" id="definicion" aria-live="polite">
       <i>M</i> = (<i>Q</i>, Σ, Γ, δ, <i>q</i><sub>0</sub>, <i>Z</i><sub>0</sub>, <i>F</i>, <i>w</i>)
@@ -83,6 +83,12 @@
             <h3>Pila</h3>
             <ol class="pila" id="pila" aria-label="Pila del autómata, con la cima arriba"></ol>
           </div>
+        </div>
+        <div id="recorrido" class="recorrido" hidden>
+          <h3>Recorrido en el autómata</h3>
+          <p class="nota-recorrido">Actual en negro · visitados en amarillo pálido · última transición en ocre
+            (con bloques de 1 byte se ve cada una).</p>
+          <div id="diagrama-recorrido"></div>
         </div>
         <div id="veredicto">
           <p class="vacio">Pulsa <b>Validar</b> para obtener el veredicto, o <b>Validar por bloques</b> para ver cómo el

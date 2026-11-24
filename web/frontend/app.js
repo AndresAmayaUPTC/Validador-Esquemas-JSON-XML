@@ -98,6 +98,7 @@ function abrir(id) {
     p.tabIndex = activa ? 0 : -1;
     $(p.getAttribute('aria-controls')).hidden = !activa;
   }
+  document.dispatchEvent(new Event('pestana-abierta'));   // los diagramas se reajustan al hacerse visibles
 }
 pestanas.forEach((p, i) => {
   p.addEventListener('click', () => abrir(p.id.slice(2)));
@@ -111,24 +112,261 @@ pestanas.forEach((p, i) => {
 });
 
 // ---- dibujo de grafos ----
+// Visor con zoom: se abre ajustado al ancho de la lámina; se arrastra para desplazarse, Ctrl + rueda (o los
+// botones) acerca y aleja alrededor del puntero, y puede pasar a pantalla completa.
 let viz;
-async function dibujar(dot, destino) {
+const ESCALA_MIN = 0.02, ESCALA_MAX = 4, MARGEN = 12;
+
+/**
+ * Resaltado de un autómata dibujado por Graphviz: al elegir un estado se destacan sus transiciones (entrantes y
+ * salientes) y sus vecinos, y se atenúa el resto. También sustituye los títulos de Graphviz («q2->q6») por textos
+ * legibles, que el navegador muestra al pasar el puntero. Devuelve la función que atiende un clic.
+ */
+function prepararResaltado(svg) {
+  const nodos = new Map();   // nombre en el DOT (q0, ini, ret) → <g>
+  for (const g of svg.querySelectorAll('g.node')) {
+    g.dataset.id = g.querySelector('title')?.textContent ?? '';
+    nodos.set(g.dataset.id, g);
+  }
+  const aristas = [...svg.querySelectorAll('g.edge')].map((g) => {
+    const [de, a] = (g.querySelector('title')?.textContent ?? '').split('->');
+    return { g, de, a };
+  });
+  const nombre = (id) => (id === 'ret' ? '↩' : nodos.get(id)?.querySelector('text')?.textContent ?? id);
+  for (const [id, g] of nodos) {
+    const titulo = g.querySelector('title');
+    if (!titulo) continue;
+    const salen = aristas.filter((x) => x.de === id).length, entran = aristas.filter((x) => x.a === id).length;
+    titulo.textContent = id === 'ini' ? 'Inicio'
+      : id === 'ret' ? '↩ Retorno: se vuelve al estado que indica la cima de la pila'
+      : `${nombre(id)}: ${salen} transiciones salientes, ${entran} entrantes`;
+  }
+  for (const x of aristas) {
+    const titulo = x.g.querySelector('title');
+    // la etiqueta visible o, si la arista no la tiene (las de violación), el tooltip que Graphviz pone en un <a>
+    const enlace = x.g.querySelector('a');
+    const etiqueta = [...x.g.querySelectorAll('text')].map((t) => t.textContent).join('\n')
+      || enlace?.getAttributeNS('http://www.w3.org/1999/xlink', 'title') || enlace?.getAttribute('title') || '';
+    // el <a> de Graphviz tiene su propio título; se quita para que el navegador muestre el nuestro
+    enlace?.removeAttributeNS('http://www.w3.org/1999/xlink', 'title');
+    enlace?.removeAttribute('title');
+    if (titulo) titulo.textContent = `${nombre(x.de)} → ${nombre(x.a)}${etiqueta ? `\n${etiqueta}` : ''}`;
+  }
+
+  let actual = null;
+  const resaltar = (id) => {
+    actual = id;
+    svg.classList.toggle('con-foco', id !== null);
+    for (const g of nodos.values()) g.classList.remove('foco', 'vecino');
+    for (const x of aristas) {
+      const toca = id !== null && (x.de === id || x.a === id);
+      x.g.classList.toggle('activa', toca);
+      if (toca) { nodos.get(x.de)?.classList.add('vecino'); nodos.get(x.a)?.classList.add('vecino'); }
+    }
+    if (id !== null) nodos.get(id)?.classList.add('foco');
+  };
+  const alClic = (objetivo) => {
+    const g = objetivo?.closest?.('g.node');
+    const id = g && g.dataset.id !== 'ini' ? g.dataset.id : null;
+    resaltar(id === actual ? null : id);   // otro clic en el mismo estado, en el fondo o Esc: se quita
+  };
+
+  // ---- recorrido de una validación: estado actual, visitados y última transición ----
+  const porNombre = new Map([...nodos].filter(([id]) => id !== 'ini' && id !== 'ret').map(([id]) => [nombre(id), id]));
+  let enCurso = null;   // id del estado actual
+  const reiniciar = () => {
+    enCurso = null;
+    for (const g of nodos.values()) g.classList.remove('actual', 'visitado');
+    for (const x of aristas) x.g.classList.remove('recorrida', 'ultima');
+  };
+  /** Marca el estado de nombre dado como actual. Devuelve su <g>, o null si no está en el diagrama. */
+  const marcar = (nombreDelEstado) => {
+    // sin nombre: el estado inicial (antes de leer nada, el progreso todavía no trae estado)
+    const id = nombreDelEstado == null
+      ? [...nodos].find(([, g]) => g.classList.contains('inicial'))?.[0]
+      : porNombre.get(nombreDelEstado);
+    if (id === undefined || id === enCurso) return id === undefined ? null : nodos.get(id);
+    for (const x of aristas) x.g.classList.remove('ultima');
+    if (enCurso !== null) {
+      nodos.get(enCurso).classList.replace('actual', 'visitado');
+      // la transición tomada: directa, o pasando por el punto de retorno ↩ si el diagrama lo agrupa
+      const directa = aristas.filter((x) => x.de === enCurso && x.a === id);
+      const tomadas = directa.length ? directa
+        : [...aristas.filter((x) => x.de === enCurso && x.a === 'ret'), ...aristas.filter((x) => x.de === 'ret' && x.a === id)];
+      if (directa.length || tomadas.length === 2) for (const x of tomadas) x.g.classList.add('recorrida', 'ultima');
+    }
+    enCurso = id;
+    nodos.get(id).classList.remove('visitado');
+    nodos.get(id).classList.add('actual');
+    return nodos.get(id);
+  };
+  return { alClic, marcar, reiniciar };
+}
+
+async function dibujar(dot, destino, opciones = {}) {
   try {
     viz ??= await graphviz();
-    const lamina = document.createElement('div');
-    lamina.className = 'lamina';
-    lamina.append(viz.renderSVGElement(dot));
-    // por defecto a tamaño real (se lee); el botón lo encoge para verlo entero
-    const barra = document.createElement('div');
-    barra.className = 'sobre-lamina';
-    const boton = Object.assign(document.createElement('button'), { textContent: 'Ver entero' });
-    boton.addEventListener('click', () => {
-      boton.textContent = lamina.classList.toggle('entera') ? 'Ver a tamaño real' : 'Ver entero';
+    const svg = viz.renderSVGElement(dot);
+    // Graphviz da el tamaño en puntos; se pasa a píxeles y desde aquí lo controla la escala
+    const ancho = parseFloat(svg.getAttribute('width')) * 4 / 3;
+    const alto = parseFloat(svg.getAttribute('height')) * 4 / 3;
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+
+    const crear = (etiqueta, clase, texto) => Object.assign(document.createElement(etiqueta), { className: clase, textContent: texto ?? '' });
+    const marco = crear('div', 'diagrama');
+    const barra = crear('div', 'sobre-lamina');
+    const lamina = crear('div', 'lamina');
+    lamina.tabIndex = 0;
+    lamina.setAttribute('aria-label', 'Diagrama: arrastra para desplazarte; Ctrl + rueda o + y − para el zoom');
+    lamina.append(svg);
+    const boton = (texto, titulo) => Object.assign(crear('button', '', texto), { type: 'button', title: titulo });
+    const ayuda = crear('span', 'ayuda', 'Arrastra para moverte · doble clic o Ctrl + rueda para el zoom');
+    const bAncho = boton('Ajustar al ancho', 'Que el diagrama ocupe el ancho de la lámina');
+    const bTodo = boton('Ver todo', 'Que quepa entero, a lo ancho y a lo alto');
+    const bMenos = boton('−', 'Alejar');
+    const bZoom = Object.assign(boton('100 %', 'Tamaño real'), { className: 'zoom' });
+    const bMas = boton('+', 'Acercar');
+    const bPantalla = boton('Pantalla completa', 'Ver el diagrama en toda la pantalla');
+    barra.append(bAncho, bTodo, bMenos, bZoom, bMas);
+    if (marco.requestFullscreen) barra.append(bPantalla);
+    barra.append(ayuda);
+    marco.append(barra, lamina);
+
+    let escala = 1, modo = 'ancho';   // 'ancho', 'todo' o 'libre' (el usuario eligió un zoom)
+    const aplicar = (nueva, ancla) => {
+      const anterior = escala;
+      escala = Math.min(ESCALA_MAX, Math.max(ESCALA_MIN, nueva));
+      // el punto bajo el ancla (el puntero, o el centro) se queda donde estaba
+      const ax = ancla?.x ?? lamina.clientWidth / 2, ay = ancla?.y ?? lamina.clientHeight / 2;
+      const px = (lamina.scrollLeft + ax - MARGEN) / anterior, py = (lamina.scrollTop + ay - MARGEN) / anterior;
+      svg.style.width = `${ancho * escala}px`;
+      svg.style.height = `${alto * escala}px`;
+      lamina.scrollLeft = px * escala + MARGEN - ax;
+      lamina.scrollTop = py * escala + MARGEN - ay;
+      bZoom.textContent = `${Math.round(escala * 100)} %`;
+    };
+    const ajustar = () => {
+      // la lámina mide lo que el diagrama, hasta un tope (max-height); «ver todo» cuenta con ese tope
+      const tope = document.fullscreenElement === marco ? lamina.clientHeight : parseFloat(getComputedStyle(lamina).maxHeight);
+      const w = lamina.clientWidth - 2 * MARGEN, h = tope - 2 * MARGEN;
+      if (w <= 0) return;   // la pestaña aún no está visible: se ajusta cuando aparezca
+      const objetivo = modo === 'todo' ? Math.min(w / ancho, h / alto) : w / ancho;
+      aplicar(Math.min(1, objetivo));
+      lamina.scrollLeft = lamina.scrollTop = 0;
+    };
+    const zoom = (factor, ancla) => { modo = 'libre'; aplicar(escala * factor, ancla); };
+
+    bAncho.addEventListener('click', () => { modo = 'ancho'; ajustar(); });
+    bTodo.addEventListener('click', () => { modo = 'todo'; ajustar(); });
+    bMenos.addEventListener('click', () => zoom(1 / 1.25));
+    bMas.addEventListener('click', () => zoom(1.25));
+    bZoom.addEventListener('click', () => { modo = 'libre'; aplicar(1); });
+    bPantalla.addEventListener('click', () => (document.fullscreenElement ? document.exitFullscreen() : marco.requestFullscreen()));
+    marco.addEventListener('fullscreenchange', () => {
+      bPantalla.textContent = document.fullscreenElement === marco ? 'Salir de pantalla completa' : 'Pantalla completa';
     });
-    barra.append(boton);
-    destino.replaceChildren(barra, lamina);
+    lamina.addEventListener('keydown', (e) => {
+      const accion = { '+': 1.25, '=': 1.25, '-': 1 / 1.25 }[e.key];
+      if (accion) { e.preventDefault(); zoom(accion); }
+      if (e.key === '0') { e.preventDefault(); modo = 'ancho'; ajustar(); }
+    });
+    lamina.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey) return;   // sin Ctrl, la rueda desplaza como siempre
+      e.preventDefault();
+      const caja = lamina.getBoundingClientRect();
+      zoom(Math.exp(-e.deltaY * 0.0015), { x: e.clientX - caja.left, y: e.clientY - caja.top });
+    }, { passive: false });
+
+    // arrastrar para desplazarse (ratón, lápiz o dedo). Un arrastre corto cuenta como clic (para el resaltado)
+    let arrastre = null, movido = false;
+    lamina.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      arrastre = { x: e.clientX, y: e.clientY, izquierda: lamina.scrollLeft, arriba: lamina.scrollTop };
+      movido = false;
+      lamina.setPointerCapture(e.pointerId);
+      lamina.classList.add('arrastrando');
+    });
+    lamina.addEventListener('pointermove', (e) => {
+      if (!arrastre) return;
+      if (Math.hypot(e.clientX - arrastre.x, e.clientY - arrastre.y) > 4) movido = true;
+      lamina.scrollLeft = arrastre.izquierda - (e.clientX - arrastre.x);
+      lamina.scrollTop = arrastre.arriba - (e.clientY - arrastre.y);
+    });
+    const soltar = () => { arrastre = null; lamina.classList.remove('arrastrando'); };
+    lamina.addEventListener('pointerup', (e) => {
+      // con la captura del puntero, el destino del evento es la lámina: se busca qué hay bajo el puntero
+      if (arrastre && !movido && alClic) alClic(document.elementFromPoint(e.clientX, e.clientY));
+      soltar();
+    });
+    lamina.addEventListener('pointercancel', soltar);
+    const interaccion = opciones.resaltar ? prepararResaltado(svg) : null;
+    const alClic = interaccion?.alClic;
+    if (alClic) {
+      lamina.classList.add('interactiva');
+      lamina.addEventListener('keydown', (e) => { if (e.key === 'Escape') alClic(null); });
+    }
+
+    // doble clic: acerca al doble en ese punto (con Mayús, aleja); así se va de la vista general al detalle
+    lamina.addEventListener('dblclick', (e) => {
+      const caja = lamina.getBoundingClientRect();
+      zoom(e.shiftKey ? 0.5 : 2, { x: e.clientX - caja.left, y: e.clientY - caja.top });
+    });
+
+    // se ajusta al aparecer (la pestaña puede estar oculta al dibujar) y al cambiar de tamaño, salvo que el
+    // usuario haya elegido un zoom. El observador se guarda en la lámina: sin una referencia, el navegador
+    // puede recogerlo como basura mientras la pestaña está oculta y ya no avisa al mostrarse
+    lamina.observador = new ResizeObserver(() => { if (modo !== 'libre') ajustar(); });
+    lamina.observador.observe(lamina);
+    // además, al abrir la pestaña que lo contiene (no depende de que el navegador esté dibujando fotogramas)
+    const alAbrir = () => {
+      if (!lamina.isConnected) return document.removeEventListener('pestana-abierta', alAbrir);
+      if (modo !== 'libre') ajustar();
+    };
+    document.addEventListener('pestana-abierta', alAbrir);
+    destino.replaceChildren(marco);
+    aplicar(1);
+    ajustar();
+
+    // seguir un recorrido: con un zoom en el que se lean las etiquetas, y moviendo la lámina hasta el estado
+    // actual cuando se acerca al borde
+    if (opciones.seguir && escala < 0.7) { modo = 'libre'; aplicar(0.7); }
+    const sinAnimaciones = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let ultimoCentrado = 0;
+    const centrar = (g) => {
+      // desplazamiento suave, salvo que los pasos lleguen tan seguidos que una animación interrumpiría a la otra
+      const ahora = performance.now();
+      const suave = sinAnimaciones || ahora - ultimoCentrado < 400 ? 'auto' : 'smooth';
+      // la parte de la lámina que se ve de verdad: puede quedar cortada por el panel que la contiene o la ventana
+      const r = lamina.getBoundingClientRect(), panel = lamina.closest('.panel')?.getBoundingClientRect();
+      const vista = {
+        left: Math.max(r.left, panel?.left ?? 0, 0), right: Math.min(r.right, panel?.right ?? innerWidth, innerWidth),
+        top: Math.max(r.top, panel?.top ?? 0, 0), bottom: Math.min(r.bottom, panel?.bottom ?? innerHeight, innerHeight),
+      };
+      if (vista.bottom - vista.top < 40 || vista.right - vista.left < 40) return;   // la lámina no está a la vista
+      const caja = g.getBoundingClientRect(), borde = 40;
+      if (caja.left > vista.left + borde && caja.right < vista.right - borde
+          && caja.top > vista.top + borde && caja.bottom < vista.bottom - borde) return;
+      ultimoCentrado = ahora;
+      const limitar = (x, max) => Math.min(Math.max(0, x), max);
+      const left = limitar(lamina.scrollLeft + caja.left + caja.width / 2 - (vista.left + vista.right) / 2, lamina.scrollWidth - lamina.clientWidth);
+      const top = limitar(lamina.scrollTop + caja.top + caja.height / 2 - (vista.top + vista.bottom) / 2, lamina.scrollHeight - lamina.clientHeight);
+      // dónde quedará el estado; si la lámina llegó a su borde y aun así no se ve, se desplaza el panel lo justo
+      const arriba = caja.top - (top - lamina.scrollTop), abajo = arriba + caja.height;
+      lamina.scrollTo({ left, top, behavior: suave });
+      const falta = abajo > vista.bottom - borde ? abajo - (vista.bottom - borde) : arriba < vista.top + borde ? arriba - (vista.top + borde) : 0;
+      if (falta) lamina.closest('.panel')?.scrollBy({ top: falta, behavior: suave });
+    };
+    return {
+      marcar: (nombre) => {
+        const g = interaccion?.marcar(nombre);
+        if (g && opciones.seguir && !arrastre) centrar(g);   // si el usuario está arrastrando, no se le quita la vista
+      },
+      reiniciar: () => interaccion?.reiniciar(),
+    };
   } catch (e) {
     destino.innerHTML = `<p class="vacio">No se pudo dibujar el diagrama: ${html(e.message)}</p>`;
+    return null;
   }
 }
 
@@ -148,6 +386,7 @@ async function compilar() {
     if (!r.ok) return aviso('aviso-esquema', motivoDe(r), true);
     const d = r.datos;
     estado.compilado = d.ok ? d : null;
+    estado.textoCompilado = texto;
     estado.wasm = null;
     if (!d.ok) {
       $('tamanos').innerHTML = 'El esquema no compila: no hay autómata.';
@@ -227,8 +466,20 @@ function pintarAutomata(a) {
     </div>
     ${diferidas}
     <h3>Diagrama de estados</h3>
+    ${a.dot && a.dot_detallado ? `<div class="controles"><label>Retornos <select id="modo-retorno">
+      <option value="dot">agrupados en ↩ según la cima de la pila</option>
+      <option value="dot_detallado">hacia cada estado al que pueden volver</option></select></label></div>` : ''}
     <div id="diagrama">${a.dot ? '<p class="vacio">Dibujando…</p>'
       : `<p class="vacio">Con ${a.tamano.estados} estados el diagrama no se lee; la tabla de transiciones está debajo.</p>`}</div>
+    ${a.dot ? `<div class="leyenda-diagrama" aria-label="Leyenda del diagrama">
+      <span><i class="l-estado l-inicial"></i>estado inicial</span>
+      <span><i class="l-estado l-final"></i>estado de aceptación</span>
+      <span><i class="l-linea"></i>lee un símbolo y avanza</span>
+      <span><i class="l-linea l-violacion"></i>solo suma violaciones (w &gt; 0); el detalle, al pasar el puntero</span>
+      <span><i class="l-linea l-retorno"></i>retorno: vuelve según la cima de la pila</span>
+      <span><i class="l-rombo">↩</i>punto de retorno (tabla RETORNO)</span>
+      <span class="ayuda">Clic en un estado para resaltar sus transiciones; clic en el fondo o Esc para quitarlo.</span>
+    </div>` : ''}
     <h3>Función de transición δ</h3>
     <div class="controles"><label>Filtrar por estado o símbolo <input id="filtro-delta" placeholder="por ejemplo V1 o NUMERO"></label></div>
     <div class="tabla-alta" id="tabla-delta"></div>
@@ -244,7 +495,8 @@ function pintarAutomata(a) {
   pintarDelta();
   $('bajar-crate').addEventListener('click', () => descargar('/api/crate', { esquema: $('esquema').value, nombre: 'validador_generado' }, 'validador_generado.zip', 'bajar-crate'));
   $('bajar-wasm').addEventListener('click', () => descargar('/api/wasm', { esquema: $('esquema').value }, 'validador.wasm', 'bajar-wasm'));
-  if (a.dot) dibujar(a.dot, $('diagrama'));
+  if (a.dot) dibujar(a.dot, $('diagrama'), { resaltar: true });
+  $('modo-retorno')?.addEventListener('change', (e) => dibujar(a[e.target.value], $('diagrama'), { resaltar: true }));
 }
 
 async function descargar(ruta, cuerpo, nombre, idBoton) {
@@ -298,6 +550,7 @@ function pintarVeredicto(d) {
 async function validar() {
   abrir('validacion');
   $('maquina').hidden = true;
+  $('recorrido').hidden = true;
   aviso('aviso-documento', 'Validando…');
   try {
     const r = await api('/api/validar', cuerpoDeValidacion());
@@ -346,6 +599,24 @@ function pintarMaquina(p, bytes) {
     (marcos.length > visibles.length ? `<li class="mas">… ${marcos.length - visibles.length} más</li>` : '');
 }
 
+/**
+ * Diagrama de la pestaña Validación que sigue el recorrido del autómata. Se dibuja con el esquema compilado
+ * (si el texto cambió desde la última compilación, se compila antes) y se reutiliza mientras no cambie.
+ * Devuelve su control ({marcar, reiniciar}) o null si el autómata es demasiado grande para dibujarlo.
+ */
+async function prepararRecorrido() {
+  if (estado.textoCompilado !== $('esquema').value) await compilar();
+  const dot = estado.compilado?.automata?.dot;
+  $('recorrido').hidden = !dot;
+  if (!dot) return null;
+  abrir('validacion');   // visible antes de dibujar, para que la lámina tenga medidas
+  if (estado.recorrido?.dot !== dot) {
+    estado.recorrido = { dot, control: await dibujar(dot, $('diagrama-recorrido'), { resaltar: true, seguir: true }) };
+  }
+  estado.recorrido.control?.reiniciar();
+  return estado.recorrido.control;
+}
+
 let cancelarStreaming = null;
 async function validarPorBloques() {
   if (cancelarStreaming) return cancelarStreaming();
@@ -372,11 +643,14 @@ async function validarPorBloques() {
     $('maquina').hidden = false;
     $('veredicto').innerHTML = '<h3>Violaciones</h3><ul class="lista" id="en-vivo"></ul>';
     pintarMaquina({ bytes: 0, violaciones: 0, profundidad: 0, profundidad_maxima: 0, estado_del_automata: '—', ruta: '', pila: ['Z0'] }, bytes);
+    const recorrido = await prepararRecorrido();
+    recorrido?.marcar(null);   // empieza en el estado inicial
     for (let i = 0; i < bytes.length && !cancelado; i += tamano) {
       canal.ws.send(bytes.subarray(i, i + tamano));
       const p = await canal.siguiente();
       if (p.tipo !== 'progreso') return aviso('aviso-documento', p.mensaje ?? 'El servidor cerró la conexión.', true);
       pintarMaquina(p, bytes);
+      recorrido?.marcar(p.estado_del_automata);
       for (const v of p.nuevas) {
         $('en-vivo').insertAdjacentHTML('beforeend', `<li><span class="donde">${enlaceA('documento', v, `byte ${v.byte}`)}</span>${html(v.mensaje)}</li>`);
       }
@@ -610,6 +884,7 @@ async function cargarCaso(id) {
   if (!r.ok) return;
   $('esquema').value = r.datos.esquema;
   ponerDocumento(deBase64(r.datos.payload_b64));
+  $('ejemplos').value = '';   // el editor ya no tiene un ejemplo: el selector vuelve a «Cargar un ejemplo…»
   await compilar();
   await validar();
 }
@@ -780,6 +1055,9 @@ async function arrancar() {
       await validar();
       abrir('analisis');
     });
+    // al editar el esquema a mano ya no es el ejemplo: el selector vuelve a «Cargar un ejemplo…». «input» solo llega
+    // con cambios del usuario, no cuando el programa asigna el texto al cargar un ejemplo o un caso
+    $('esquema').addEventListener('input', () => { $('ejemplos').value = ''; });
     $('ejemplos').value = ejemplos.datos[0].nombre;
     $('ejemplos').dispatchEvent(new Event('change'));
     listarCasos();
