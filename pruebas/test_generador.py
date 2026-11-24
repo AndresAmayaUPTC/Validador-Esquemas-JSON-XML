@@ -16,7 +16,7 @@ from compilador.automata.interprete import validar
 from compilador.generador.payloads import SIN_DOCUMENTO, Generador, a_json, generar_casos
 from compilador.generador.rust import ESTADOS, FALLOS, MOTIVOS, generar_crate
 from compilador.generador.tablas import NINGUNO, TOKENS, aplanar, emitir_rust, serializar
-from pruebas.test_automata import ARBOL, DIFERIDOS, EXACTOS, PERSONA, compilado, instancias
+from pruebas.test_automata import ARBOL, DIFERIDOS, EXACTOS, PERSONA, RESPALDO, compilado, instancias
 from pruebas.test_motor_rust import FALLOS as TEXTO_DE_FALLO
 
 CODIGO = Path(__file__).resolve().parents[1]
@@ -38,7 +38,8 @@ def test_tablas_planas():
     claves = [q for q in range(t.n_estados) if t.otra[q] != NINGUNO]
     assert claves and all(t.trie[q] != NINGUNO for q in claves)
     assert t.delta[t.inicial * 12 + TOKENS.index('LLAVE_ABRE')] != NINGUNO
-    assert serializar(t).startswith(f'cabecera {t.n_estados} {t.inicial} {t.acepta} 0 1\ndelta ')
+    # sin sub-ejecuciones ni huellas: FIN_HILO y Zh no existen
+    assert serializar(t).startswith(f'cabecera {t.n_estados} {t.inicial} {t.acepta} 0 1 {NINGUNO} {NINGUNO} 0\ndelta ')
 
 
 def test_decimales_normalizados():
@@ -107,8 +108,11 @@ def test_esquemas_dificiles_para_el_generador():
     imposible = compilado({'type': 'string', 'enum': [1, 2]})        # no admite ningún valor
     casos = generar_casos(imposible, 3, 3, 2, semilla=0)
     assert not [c for c in casos if c.clase == 'valido'] and [c for c in casos if c.clase == 'invalido']
-    diferido = generar_casos(compilado(DIFERIDOS['patron']), 5, 3, 0, semilla=0)
-    assert {c.estado for c in diferido if c.clase == 'valido'} == {'pendiente'}   # no se puede garantizar el patrón
+    diferido = generar_casos(compilado(DIFERIDOS['patron_no_regular']), 5, 3, 0, semilla=0)
+    assert {c.estado for c in diferido if c.clase == 'valido'} == {'pendiente'}   # el patrón no regular no se comprueba
+    # un patrón regular sí: las cadenas válidas salen del propio AFD
+    con_patron = generar_casos(compilado(RESPALDO['patron']), 5, 3, 0, semilla=0)
+    assert [c.estado for c in con_patron if c.clase == 'valido'] == ['valido'] * 5
     assert Generador(compilado({'minItems': 5000, 'type': 'array'})).documento() is SIN_DOCUMENTO
     assert Generador(compilado({'type': 'null'})).documento() is None   # null es un documento, no una ausencia
 
@@ -130,12 +134,17 @@ def cargo():
     return ejecutar
 
 
+# Con sub-ejecuciones (anyOf ambiguo, not, contains, propertyNames), huellas (uniqueItems), patrones y múltiplos.
+COMBINADO = {'type': 'object', 'required': ['id'], 'propertyNames': {'maxLength': 5}, 'properties': {
+    'lista': RESPALDO['anidados'], 'id': {'type': 'string', 'pattern': '^[a-z]+-[0-9]{2}$'}, 'n': {'multipleOf': 0.25}}}
+
+
 @pytest.fixture(scope='module')
 def crates(tmp_path_factory, cargo):
-    """Crates generados para dos esquemas, ya compilados como biblioteca dinámica."""
+    """Crates generados para tres esquemas, ya compilados como biblioteca dinámica."""
     raiz = tmp_path_factory.mktemp('generados')
     resultado = {}
-    for nombre, esquema in (('persona', PERSONA), ('arbol', ARBOL)):
+    for nombre, esquema in (('persona', PERSONA), ('arbol', ARBOL), ('combinado', COMBINADO)):
         c = compilado(esquema)
         casos = generar_casos(c, 10, 10, 6, semilla=4)
         carpeta = generar_crate(c, raiz / nombre, f'validador_{nombre}', casos=casos, origen=f'{nombre}.json')
@@ -194,8 +203,12 @@ def test_api_en_c_desde_python(crates):
         pdv.pdv_ruta.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]   # el destino se escribe
         pdv.pdv_ruta.restype = ctypes.c_size_t
         tamano = pdv.pdv_tamano()
-        # el lexer (1 KB), 128 marcos de 48 bytes (registros y comienzo de la clave) y el resultado con su ruta
-        assert 4096 < tamano < 12288 and pdv.pdv_alineacion() == 8
+        if nombre == 'combinado':
+            # 17 ejecuciones × 128 marcos de 24 bytes, 1024 huellas de 8 bytes y una pila de huellas de 128 niveles
+            assert 17 * 128 * 24 + 1024 * 8 < tamano < 80_000
+        else:
+            # el lexer (1 KB), 128 marcos de 24 bytes, el comienzo de la clave de cada nivel y el resultado
+            assert 4096 < tamano < 12288 and pdv.pdv_alineacion() == 8
         memoria = (ctypes.c_uint64 * (tamano // 8 + 1))()            # alineada a 8, aportada por el llamador
         automata = compilado(esquema).automata
         documentos = [c.payload for c in casos] + [json.dumps(d).encode() for d in instancias(esquema, 150, semilla=8)]
@@ -224,15 +237,16 @@ def test_api_en_c_desde_python(crates):
         assert (r.estado, r.posicion, r.motivo) == (ESTADOS.index('limite'), 4, 101 + FALLOS.index('tiempo'))
 
 
-def test_webassembly(crates, cargo, tmp_path):
+@pytest.mark.parametrize('nombre', ['arbol', 'combinado'])
+def test_webassembly(crates, cargo, tmp_path, nombre):
     node = shutil.which('node')
     instalados = subprocess.run(['rustup', 'target', 'list', '--installed'], capture_output=True, text=True,
                                 env=dict(os.environ, PATH=str(Path.home() / '.cargo' / 'bin') + os.pathsep + os.environ['PATH']))
     if node is None or 'wasm32-unknown-unknown' not in instalados.stdout:
         pytest.skip('hace falta node y el destino wasm32-unknown-unknown de Rust')
-    carpeta, esquema, casos = crates['arbol']
+    carpeta, esquema, casos = crates[nombre]
     cargo(carpeta, 'build', '--quiet', '--release', '--target', 'wasm32-unknown-unknown')
-    modulo = DESTINO_DE_COMPILACION / 'wasm32-unknown-unknown' / 'release' / 'validador_arbol.wasm'
+    modulo = DESTINO_DE_COMPILACION / 'wasm32-unknown-unknown' / 'release' / f'validador_{nombre}.wasm'
     assert modulo.stat().st_size < 200_000
     documentos = [c.payload for c in casos] + [json.dumps(d).encode() for d in instancias(esquema, 60, semilla=5)]
     (tmp_path / 'casos.json').write_text(json.dumps([d.hex() for d in documentos]))
@@ -247,7 +261,7 @@ def test_crate_autocontenido(tmp_path):
     assert 'validador = { path = "motor" }' in (carpeta / 'Cargo.toml').read_text(encoding='utf-8')
     copiados = {p.relative_to(carpeta / 'motor').as_posix() for p in (carpeta / 'motor').rglob('*') if p.is_file()}
     assert copiados == {'Cargo.toml', 'src/lib.rs', 'src/lexer.rs', 'src/tablas_json.rs', 'src/automata.rs',
-                        'src/decimal.rs', 'src/validador.rs', 'src/xml.rs', 'src/tablas_xml.rs', 'src/validador_xml.rs'}
+                        'src/decimal.rs', 'src/huellas.rs', 'src/validador.rs', 'src/xml.rs', 'src/tablas_xml.rs', 'src/validador_xml.rs'}
     assert not (carpeta / 'tests').exists()   # sin casos no se escribe el archivo de pruebas
 
 

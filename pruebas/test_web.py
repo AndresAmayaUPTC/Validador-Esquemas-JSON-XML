@@ -54,7 +54,10 @@ def test_compilar_un_esquema(cliente):
     recursivo = cliente.post('/api/compilar', json={'esquema': ARBOL}).json()
     assert recursivo['grupos_recursivos'] == 1 and any(x['recursiva'] for x in recursivo['referencias'])
     diferido = cliente.post('/api/compilar', json={'esquema': json.dumps(sembrar.FUERA_DEL_DPDA)}).json()
-    assert {d['palabra'] for d in diferido['automata']['diferidas']} == {'pattern', 'anyOf', 'uniqueItems'}
+    # solo el patrón no regular queda diferido: los demás tienen su estrategia de respaldo
+    assert diferido['automata']['diferidas'] == [{'ruta': '/properties/firma', 'palabra': 'pattern'}]
+    estrategias = {c['palabra']: c['estrategia'] for c in diferido['clasificacion']}
+    assert estrategias['uniqueItems'].startswith('huellas') and 'sub-ejecuciones' in estrategias['anyOf']
 
 
 @pytest.mark.parametrize('esquema, fase, linea, columna', [
@@ -163,7 +166,12 @@ def test_almacen_de_casos(repositorio):
 
 def test_sembrar_los_casos_de_la_propuesta(repositorio):
     assert len(sembrar.CASOS) == 26 and len(sembrar.CASOS_XML) == 23
-    assert sembrar.sembrar(repositorio) == 49
+    # un caso sembrado con un nombre que ya no existe y otro creado a mano por la API
+    repositorio.guardar({'_id': sembrar.identificador('Patrón sin verificar'), 'nombre': 'Patrón sin verificar'})
+    repositorio.guardar({'_id': 'amano', 'nombre': 'Creado por la API', 'categoria': 'valido'})
+    assert sembrar.sembrar(repositorio) == (49, 1)
+    assert repositorio.obtener('amano') is not None   # lo que no es de la siembra no se toca
+    repositorio.borrar('amano')
     casos = repositorio.listar()
     assert {c['categoria'] for c in casos} == set(CATEGORIAS)
     estados = {c['nombre']: (c['esperado']['estado'], c['esperado']['violaciones']) for c in casos}
@@ -171,18 +179,19 @@ def test_sembrar_los_casos_de_la_propuesta(repositorio):
         if c['categoria'] in ('valido', 'invalido', 'malformado'):
             assert c['esperado']['estado'] == c['categoria'], c['nombre']
     assert estados['Falta la edad'] == ('invalido', 1) and estados['Varias violaciones'] == ('invalido', 5)
-    assert estados['Patrón sin verificar'][0] == estados['anyOf ambiguo'][0] == estados['uniqueItems sin verificar'][0] == 'pendiente'
-    assert estados['Sin comprobaciones diferidas'] == ('invalido', 1)
+    assert estados['Patrón que no casa'] == estados['anyOf ambiguo'] == estados['uniqueItems con repetidos'] == ('invalido', 1)
+    assert estados['Patrón no regular'] == ('pendiente', 0)
     assert estados['Árbol con k = 60'] == ('valido', 0) and estados['Arreglo de 20 000 números'] == ('valido', 0)
     assert estados['Profundidad sobre el límite'][0] == 'limite' and estados['Números enormes'] == ('invalido', 1)
     repositorio.guardar(casos[0] | {'ultimo': {'estado': 'valido'}})
-    sembrar.sembrar(repositorio)                                   # sembrar otra vez no duplica ni borra métricas
+    assert sembrar.sembrar(repositorio) == (49, 0)                 # sembrar otra vez no duplica ni borra métricas
     assert len(repositorio.listar()) == 49 and repositorio.obtener(casos[0]['_id'])['ultimo'] == {'estado': 'valido'}
     # los de XML: las mismas categorías, y los ataques con DOCTYPE se rechazan como mal formados en el byte 2
     de_xml = [c for c in casos if c['lenguaje'] == 'xml']
     assert len(de_xml) == 23 and {c['categoria'] for c in de_xml} == set(CATEGORIAS)
     assert estados['XML: DOCTYPE con entidad externa (XXE)'] == estados['XML: expansión de entidades'] == ('malformado', 0)
-    assert estados['XML: varias violaciones'] == ('invalido', 8) and estados['XML: pattern sin verificar'][0] == 'pendiente'
+    assert estados['XML: varias violaciones'] == ('invalido', 8) and estados['XML: pattern que no casa'] == ('invalido', 1) \
+        and estados['XML: pattern no regular'] == ('pendiente', 0)
     assert estados['XML: profundidad sobre el límite'][0] == 'limite' and estados['XML: decimales enormes'] == ('valido', 0)
 
 

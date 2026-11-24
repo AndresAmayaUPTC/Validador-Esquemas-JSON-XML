@@ -8,6 +8,7 @@
 
 pub mod automata;
 pub mod decimal;
+pub mod huellas;
 pub mod lexer;
 #[rustfmt::skip]
 mod tablas_json;

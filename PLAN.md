@@ -71,7 +71,9 @@ Informe completo de un esquema (diagnósticos, tabla de símbolos, referencias y
 - [x] Verificación de determinismo y minimización (`verificacion.py`)
 - [x] Intérprete en Python, como referencia para probar el de Rust (`interprete.py`)
 
-Quedan en verificación diferida (el autómata las señala pero no las comprueba): `pattern`, `patternProperties`, `uniqueItems`, `multipleOf`, `not`, `if`/`then`/`else`, `contains`, `propertyNames`, `dependentSchemas`, `enum`/`const` con objetos o arreglos, y los `anyOf`/`oneOf` en que dos ramas admiten el mismo tipo de valor.
+Las palabras clave fuera del DPDA puro se verifican con las estrategias de respaldo del paso 9. Solo quedan en
+verificación diferida las expresiones regulares que no son regulares o que no se implementan (referencias hacia atrás,
+aserciones, `\b`, `\p{...}`) y los `multipleOf` con un divisor de más de 18 dígitos.
 
 Definición formal y tabla δ de un esquema, y validación de un payload, desde `Código/`:
 
@@ -160,8 +162,8 @@ el motor de Rust, la aplicación web y Atlas. Oráculo de las pruebas: la biblio
 `minOccurs`/`maxOccurs` (incluido `unbounded`); atributos `use="required|optional"`; contenido simple con atributos
 (`simpleContent`/`extension`); tipos simples `xs:string`, `xs:integer`, `xs:decimal`, `xs:boolean` y `simpleType` con
 `restriction` y las facetas `minInclusive`, `maxInclusive`, `minExclusive`, `maxExclusive`, `minLength`, `maxLength`,
-`length`, `enumeration`; tipos con nombre (`type="..."`) y `ref="..."`, incluidos los recursivos. `pattern` queda en
-verificación diferida. Todo lo demás (`all`, `any`, `anyAttribute`, grupos, sustituciones, espacios de nombres propios,
+`length`, `enumeration`; tipos con nombre (`type="..."`) y `ref="..."`, incluidos los recursivos, y `pattern` (paso 9).
+Todo lo demás (`all`, `any`, `anyAttribute`, grupos, sustituciones, espacios de nombres propios,
 `import`/`include`, contenido mixto, `key`/`keyref`, `default`/`fixed`) es error de compilación «no soportada».
 
 **Léxico** (`compilador/lexico/lexer_xml.py`). El AFD de `afd.construir_xml()` más las acciones de valor, por bloques
@@ -180,7 +182,7 @@ coincida con la de apertura, atributos sin repetir y una sola raíz. Con él se 
 
 **Semántico** (`compilador/xsd/`). Del árbol del XSD a un modelo con tabla de símbolos (tipos y elementos con nombre),
 referencias resueltas, ciclos, diagnósticos con posición y clasificación: (a) directas: elementos, `sequence`, `choice`,
-ocurrencias, tipos y facetas; (b) con registros: atributos obligatorios (máscara de bits) y repetidos; (c) `pattern`, diferida.
+ocurrencias, tipos y facetas; (b) con registros: atributos obligatorios (máscara de bits) y repetidos; (c) `pattern`, AFD anclado.
 
 **Autómata.** Un nodo por pareja (nombre de elemento, tipo). El modelo de contenido de cada tipo es una expresión regular
 sobre nombres de hijos: Glushkov → determinización por subconjuntos (con cota) → minimización; las ocurrencias acotadas se
@@ -227,3 +229,38 @@ de 11 000 casos; el crate generado se prueba con `cargo test`, por la API en C y
 - Un número de más de 256 bytes que haya que comparar con un límite o una enumeración detiene la validación (`limite`).
 - No se interpretan `xsi:type` ni `xsi:nil`: los atributos `xmlns:*` y `xsi:*` se ignoran.
 - La línea base de la medición (`roxmltree`) solo construye el árbol: no existe en Rust un validador de XSD comparable.
+
+### 9. Estrategias de respaldo (fuera del DPDA puro)
+
+Lo que antes quedaba en verificación diferida en JSON se comprueba ahora en la misma pasada, con memoria acotada:
+
+| Palabras clave | Estrategia | Dónde |
+|---|---|---|
+| `pattern`, `patternProperties` | AFD de la expresión regular (ECMA-262): Thompson sobre bytes UTF-8 → subconjuntos → Moore. Búsqueda Σ*·R·Σ* sobre ⊢w⊣. Sin retroceso: lineal, sin ReDoS | `compilador/automata/expresiones.py` |
+| `patternProperties` con `properties` | Producto del trie de los nombres y los AFD de los patrones: cada conjunto de patrones con el que puede casar una clave da su nodo | `nodos.py`, `generador/tablas.py` |
+| `multipleOf` | Aritmética entera exacta sobre la forma canónica: M divide a D·10^(a−b), módulo M en 64 bits | `compilador/automata/valores.py`, `validador/src/decimal.rs` |
+| `uniqueItems`, `enum`/`const` con objetos o arreglos | Huellas de 64 bits de la forma canónica (1 = 1.0, objetos sin orden), calculadas en streaming; las de los elementos se guardan en un fondo de 1024 | `valores.py`, `validador/src/huellas.rs` |
+| `anyOf`/`oneOf` ambiguos, `not`, `if`/`then`/`else`, `dependentSchemas`, `contains` (con `minContains`/`maxContains`), `propertyNames` | Producto de autómatas en la ejecución: sub-ejecuciones del mismo DPDA (pila propia con fondo Zh, terminan en FIN_HILO) que leen el mismo valor; sus pesos se combinan al terminar (anyOf = mínimo del semianillo tropical). Hasta 16 a la vez | `nodos.py`, `dpda.py`, `interprete.py`, `validador/src/validador.rs` |
+
+Una rama con comprobaciones diferidas da «quizá»: los grupos combinan con lógica de tres valores (cumple, falla, quizá).
+Nuevos límites, que el intérprete y el motor aplican igual: más de 16 sub-ejecuciones vivas → `limite` (`hilos`); más
+de 1024 huellas de elementos a la vez → esa comprobación de `uniqueItems` queda pendiente. Dos valores distintos con la
+misma huella (probabilidad ~2⁻⁶⁴ por par) darían un falso «repetido».
+
+El validador de Rust tiene dos parámetros más: `E` (ejecuciones) y `U` (huellas), y `C` (niveles de la pila de huellas).
+Por omisión valen 1, 0 y 0: un esquema que no usa estas estrategias ocupa y tarda lo mismo que antes (medido: 126 MB/s
+en registros, igual que la versión anterior en el mismo equipo). El crate generado los fija según el esquema.
+
+Pruebas: `pruebas/test_expresiones.py` (contra `re`, rangos UTF-8, ReDoS, huellas y múltiplos contra `fractions`),
+`RESPALDO` en `pruebas/test_automata.py` (mismo veredicto que `jsonschema`) y `pruebas/test_motor_rust.py` (Rust =
+Python también en patrones partidos en cualquier byte, múltiplos, huellas y los dos límites nuevos).
+
+**`xs:pattern` de XSD.** El mismo AFD con la sintaxis del apéndice F de XSD Parte 2 (`_AnalizadorXSD` en
+`expresiones.py`): anclada a todo el valor, `^` y `$` como caracteres normales, `\i` y `\c` (nombres de XML 1.0, quinta
+edición), `\d`, `\w` y `\p{..}` con las categorías de Unicode (tabla de `unicodedata`) y resta de clases
+`[a-z-[aeiou]]`. Varios `pattern` de un mismo paso de restricción se combinan con «o» (una sola prueba, el AFD de la
+unión); los de pasos de derivación distintos, con «y». En `xs:string` se aplica al texto tal cual; en los tipos numéricos
+y `xs:boolean`, sin los espacios de los lados (el motor no le pasa al AFD los bytes en blanco: si hay uno en medio, ya
+falla la forma léxica, que va antes). Solo quedan diferidos los bloques Unicode (`\p{IsBasicLatin}`).
+Diferencias conocidas con el oráculo (`elementpath`): fuera de una clase deja `\w` y `\s` a `re` de Python (`_` cuenta
+en `\w`) y en `\i`/`\c` no incluye el plano astral; aquí se sigue la especificación.

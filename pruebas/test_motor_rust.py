@@ -16,12 +16,12 @@ import pytest
 from compilador.automata.interprete import validar
 from compilador.generador.tablas import aplanar, serializar
 from pruebas.corpus import ENTRADAS_JSON, particion
-from pruebas.test_automata import ARBOL, DIFERIDOS, EXACTOS, PERSONA, compilado, instancias
+from pruebas.test_automata import ARBOL, DIFERIDOS, EXACTOS, PERSONA, RESPALDO, compilado, instancias
 
 VALIDADOR = Path(__file__).resolve().parents[1] / 'validador'
 FALLOS = {'léxico: byte': 'lexico-byte', 'léxico: fin': 'lexico-fin', 'léxico: número': 'lexico-largo',
           'sintáctico': 'sintactico', 'clave repetida': 'clave-repetida', 'profundidad': 'profundidad',
-          'tamaño': 'tamano', 'tiempo': 'tiempo'}
+          'tamaño': 'tamano', 'tiempo': 'tiempo', 'demasiadas sub-ejecuciones': 'hilos'}
 
 
 @pytest.fixture(scope='module')
@@ -101,13 +101,14 @@ def casos_de(esquema, rng, n=120):
 
 def test_esquemas_exactos_y_diferidos(motor):
     rng = random.Random(41)
-    lotes = [(compilado(esquema).automata, casos_de(esquema, rng)) for esquema in list(EXACTOS.values()) + list(DIFERIDOS.values())]
-    assert comparar(motor, lotes) == 30 * 120 * 5
+    esquemas = list(EXACTOS.values()) + list(RESPALDO.values()) + list(DIFERIDOS.values())
+    lotes = [(compilado(esquema).automata, casos_de(esquema, rng)) for esquema in esquemas]
+    assert comparar(motor, lotes) == len(esquemas) * 120 * 5
 
 
 def test_todos_los_estados_aparecen(motor):
     rng = random.Random(43)
-    lotes = [(compilado(e).automata, casos_de(e, rng, 60)) for e in (PERSONA, ARBOL, DIFERIDOS['patron'])]
+    lotes = [(compilado(e).automata, casos_de(e, rng, 60)) for e in (PERSONA, ARBOL, DIFERIDOS['patron_no_regular'])]
     estados = {linea.split()[0] for lineas in motor(lotes) for linea in lineas}
     assert estados == {'valido', 'pendiente', 'invalido', 'malformado', 'limite'}
 
@@ -203,3 +204,69 @@ def test_bombeo_y_profundidad(motor):
     assert lineas[0] == 'valido 0 0 3 - - - - -'
     assert lineas[1].startswith('limite') and lineas[2].startswith('valido')
     assert lineas[9].startswith('limite')   # k = 64 pide 129 niveles y el máximo es 128
+
+
+def test_patrones_en_valores_y_claves(motor):
+    # el AFD de los patrones (valores) y el producto de nombres y patrones (claves), con cadenas partidas
+    # en cualquier sitio, también dentro de un carácter de varios bytes
+    rng = random.Random(67)
+    esquema = {'type': 'object', 'properties': {
+        'a': {'pattern': '^[a-zñ]{2,4}$'}, 'ab': {'pattern': 'b', 'maxLength': 3},
+        'c': {'allOf': [{'pattern': '^x'}, {'pattern': 'z$'}, {'pattern': '😀|é'}]}},
+        'patternProperties': {'^a': {'type': 'string'}, '[0-9]$': {'pattern': '^.$'}, 'é': True},
+        'additionalProperties': {'type': 'integer'}, 'propertyNames': {'pattern': '^[^ ]*$'}}
+    alfabeto = ['', 'a', 'b', 'ab', 'abc', 'ñaña', 'xz', 'x😀z', 'xéz', 'x z', 'a1', 'b2', 'é', 'aé', 'a b', 'zzzzz', '9']
+    casos = []
+    for _ in range(1500):
+        doc = {rng.choice(alfabeto): rng.choice(alfabeto + [1, None]) for _ in range(rng.randint(0, 4))}
+        datos = json.dumps(doc, ensure_ascii=rng.random() < 0.5).encode()
+        casos.append((datos, particion(rng, len(datos)), 128, rng.random() < 0.2))
+    lineas = motor([(compilado(esquema).automata, casos)])[0]
+    assert comparar(motor, [(compilado(esquema).automata, casos)]) == 1500
+    assert {l.split()[0] for l in lineas} == {'valido', 'invalido'}
+    assert {l.split()[5] for l in lineas} >= {'patron', 'propertyNames', 'no_admitido'}
+
+
+def test_multiplos_exactos(motor):
+    rng = random.Random(71)
+    esquemas = [{'multipleOf': 0.5}, {'multipleOf': 7}, {'multipleOf': 0.001}, {'multipleOf': 123456789012345678},
+                {'multipleOf': 1e-30}, {'multipleOf': 2.5e10}, {'type': 'integer', 'multipleOf': 3, 'maximum': 1e20}]
+    lotes = [(compilado(e).automata, [(numero_aleatorio(rng), [], 128, rng.random() < 0.2) for _ in range(500)])
+             for e in esquemas]
+    assert comparar(motor, lotes) == 500 * len(esquemas)
+
+
+def test_huellas_y_sub_ejecuciones(motor):
+    rng = random.Random(73)
+    esquemas = [
+        {'uniqueItems': True},
+        {'type': 'array', 'items': {'uniqueItems': True}, 'uniqueItems': True},
+        {'enum': [{'a': [1, 2]}, [1, {'b': None}], 'x', {}, []]},
+        {'contains': {'enum': [{'a': 1}, [1]]}, 'minContains': 2},
+        {'anyOf': [{'type': 'array', 'items': {'$ref': '#'}}, {'type': 'array', 'maxItems': 2}]},
+        {'oneOf': [{'items': {'type': 'integer'}}, {'items': {'minimum': 2}}, {'not': {'uniqueItems': True}}]},
+    ]
+    piezas = [b'1', b'1.0', b'2', b'"a"', b'"\\u0061"', b'null', b'{"a": 1}', b'{"a": 1.0}', b'[1]', b'[1, 2]', b'{}', b'[]']
+
+    def valor(prof):
+        if prof < 5 and rng.random() < 0.4:
+            hijos = [valor(prof + 1) for _ in range(rng.randint(0, 4))]
+            return b'[' + b', '.join(hijos) + b']'
+        if prof < 5 and rng.random() < 0.2:
+            return b'{"a": ' + valor(prof + 1) + b', "b": ' + valor(prof + 1) + b'}'
+        return rng.choice(piezas)
+
+    lotes = []
+    for esquema in esquemas:
+        casos = []
+        for _ in range(400):
+            datos = valor(0)
+            casos.append((datos, particion(rng, len(datos)), 128, rng.random() < 0.2))
+        # muchas huellas (más de las 1024 que caben) y mucho anidamiento (más de 16 sub-ejecuciones)
+        casos.append((b'[' + b', '.join(b'%d' % i for i in range(1500)) + b']', [], 128, False))
+        casos.append((b'[' * 12 + b']' * 12, [3] * 8, 128, False))
+        lotes.append((compilado(esquema).automata, casos))
+    lineas = [l for ls in motor(lotes) for l in ls]
+    assert comparar(motor, lotes) == 402 * len(esquemas)
+    estados = {l.split()[0] for l in lineas}
+    assert estados == {'valido', 'invalido', 'pendiente', 'limite'}   # pendiente: huellas llenas; límite: hilos

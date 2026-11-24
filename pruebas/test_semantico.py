@@ -293,7 +293,8 @@ def test_clasificacion_del_arbol():
     assert a.nivel == 'b'
 
 
-DESPACHO_PARCIAL = 'despacho por el primer token; diferida si dos ramas admiten el mismo tipo'
+DESPACHO_PARCIAL = 'despacho por el primer token; si dos ramas admiten el mismo tipo, sub-ejecuciones en paralelo'
+HUELLA = 'AFD de los valores escalares; huella de 64 bits de la forma canónica del valor para objetos y arreglos'
 
 
 @pytest.mark.parametrize('esquema, palabra, categoria, estrategia', [
@@ -301,14 +302,19 @@ DESPACHO_PARCIAL = 'despacho por el primer token; diferida si dos ramas admiten 
     ({'oneOf': [{'type': 'integer'}, {'type': 'number'}]}, 'oneOf', 'c', DESPACHO_PARCIAL),  # ambas empiezan por NUMERO
     ({'anyOf': [{'type': 'object'}, {}]}, 'anyOf', 'c', DESPACHO_PARCIAL),
     ({'allOf': [{'type': 'string'}, {'type': 'number'}]}, 'allOf', 'c', 'producto de autómatas'),
-    ({'pattern': '^a+$'}, 'pattern', 'c', 'verificación diferida'),
-    ({'not': {}}, 'not', 'c', 'verificación diferida'),
-    ({'uniqueItems': True}, 'uniqueItems', 'c', 'verificación diferida'),
+    ({'pattern': '^a+$'}, 'pattern', 'c', 'AFD de la expresión regular, en la misma pasada'),
+    ({'pattern': '(a)\\1'}, 'pattern', 'c', 'verificación diferida: referencia hacia atrás'),
+    ({'patternProperties': {'^x': {}, '(?=y)': {}}}, 'patternProperties', 'c',
+     'verificación diferida: aserción de anticipación o retroceso'),
+    ({'multipleOf': 0.5}, 'multipleOf', 'c', 'aritmética entera exacta módulo el divisor'),
+    ({'multipleOf': 1234567890123456789012}, 'multipleOf', 'c', 'verificación diferida: el divisor tiene más de 18 dígitos'),
+    ({'not': {}}, 'not', 'c', 'producto de autómatas en la ejecución: una sub-ejecución por valor; falla si la rama cumple'),
+    ({'uniqueItems': True}, 'uniqueItems', 'c', 'huellas de 64 bits de los elementos, en un fondo acotado'),
     ({'uniqueItems': False}, 'uniqueItems', 'anotacion', 'sin efecto en la validación'),
     ({'enum': ['a', 1, None]}, 'enum', 'a', 'AFD de los valores permitidos'),
-    ({'enum': ['a', 1, [1, 2]]}, 'enum', 'c', 'verificación diferida'),
+    ({'enum': ['a', 1, [1, 2]]}, 'enum', 'c', HUELLA),
     ({'const': 'a'}, 'const', 'a', 'AFD del valor permitido'),
-    ({'const': {'a': 1}}, 'const', 'c', 'verificación diferida'),
+    ({'const': {'a': 1}}, 'const', 'c', HUELLA),
     ({'mi-clave': 1}, 'mi-clave', 'desconocida', 'se ignora'),
 ])
 def test_estrategia_segun_el_uso(esquema, palabra, categoria, estrategia):
@@ -339,3 +345,9 @@ def test_informe():
     con_error = analizar_fuente(fuente)
     assert '2:11  tipo-desconocido' in con_error.informe(fuente)   # línea 2, columna 11
     assert 'byte 12  tipo-desconocido' in con_error.informe()
+
+
+@pytest.mark.parametrize('esquema', [{'pattern': '('}, {'pattern': 'a**'}, {'patternProperties': {'[b-a]': True}},
+                                     {'properties': {'x': {'pattern': '\\'}}}])
+def test_expresion_regular_invalida(esquema):
+    assert [d.codigo for d in analizar(esquema).errores] == ['expresion-invalida']

@@ -7,6 +7,7 @@
 use core::cmp::Ordering;
 
 use crate::automata::Decimal;
+use crate::huellas;
 
 /// Exponentes mayores se tratan como este: ya son más grandes que cualquier constante del esquema.
 const TOPE: i64 = 4_000_000_000_000_000_000;
@@ -102,6 +103,66 @@ impl<'a> Numero<'a> {
             .last()
             .unwrap_or(0);
         (ultimo as u64) < self.exponente as u64
+    }
+
+    /// Cantidad de dígitos significativos: hasta el último distinto de cero.
+    fn significativos(&self) -> usize {
+        if self.cero {
+            return 0;
+        }
+        self.digitos()
+            .enumerate()
+            .filter(|&(_, d)| d != 0)
+            .map(|(i, _)| i + 1)
+            .last()
+            .unwrap_or(0)
+    }
+
+    /// Huella de la forma canónica ±0.DÍGITOS × 10^e (ver `huellas.rs`): 1, 1.0 y 1e0 dan la misma.
+    pub fn huella(&self) -> u64 {
+        let (negativo, exponente) = if self.cero {
+            (false, 0)
+        } else {
+            (self.negativo, self.exponente)
+        };
+        let mut h = huellas::fnv(huellas::FNV_INICIO, &[huellas::NUMERO, negativo as u8]);
+        h = huellas::fnv(h, &exponente.to_le_bytes());
+        for d in self.digitos().take(self.significativos()) {
+            h = huellas::fnv(h, &[d]);
+        }
+        huellas::mezclar(h)
+    }
+
+    /// `true` si el número es múltiplo de la constante (positiva, de 18 dígitos como mucho).
+    ///
+    /// Con el número = D·10^a y la constante = M·10^b (D y M enteros sin ceros finales), el cociente
+    /// es entero si y solo si M divide a D·10^(a−b). Si a < b no lo es: D no acaba en cero. Si no,
+    /// se calcula D módulo M dígito a dígito y 10^(a−b) módulo M por potencias sucesivas.
+    pub fn es_multiplo(&self, c: &Decimal, fondo: &[u8]) -> bool {
+        if self.cero {
+            return true;
+        }
+        let n = self.significativos();
+        let s = (self.exponente as i128 - n as i128) - (c.exponente as i128 - c.n_digitos as i128);
+        if s < 0 {
+            return false;
+        }
+        let m = fondo[c.digitos as usize..(c.digitos + c.n_digitos) as usize]
+            .iter()
+            .fold(0u128, |m, &d| m * 10 + d as u128);
+        let resto = self
+            .digitos()
+            .take(n)
+            .fold(0u128, |r, d| (r * 10 + d as u128) % m);
+        let (mut potencia, mut base, mut e) = (1 % m, 10 % m, s as u128);
+        while e > 0 {
+            if e & 1 == 1 {
+                potencia = potencia * base % m;
+            }
+            base = base * base % m;
+            e >>= 1;
+        }
+        resto * potencia % m == 0
     }
 
     /// Compara el número con una constante del esquema.

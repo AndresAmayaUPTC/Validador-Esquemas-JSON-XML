@@ -46,6 +46,18 @@ MENSAJES = {
     'long_max': 'la cadena es más larga de lo permitido',
     'enum_num': 'el número no es uno de los valores permitidos',
     'enum_cad': 'la cadena no es uno de los valores permitidos',
+    # ---- estrategias de respaldo ----
+    'patron': 'la cadena no casa con la expresión regular (pattern)',
+    'multiplo': 'el número no es múltiplo del exigido (multipleOf)',
+    'enum_huella': 'el objeto o arreglo no es uno de los valores permitidos',
+    'unicos': 'el arreglo tiene elementos repetidos (uniqueItems)',
+    'contiene': 'el número de elementos que cumplen «contains» no está en el rango exigido',
+    'anyOf': 'no cumple ninguna de las ramas del anyOf',
+    'oneOf': 'no cumple exactamente una de las ramas del oneOf',
+    'not': 'cumple el esquema del not',
+    'if': 'no cumple el then (o el else) que le toca según el if',
+    'dependentSchemas': 'tiene una propiedad cuyo esquema dependiente no cumple',
+    'propertyNames': 'el nombre de la propiedad no cumple propertyNames',
     # ---- XML ----
     'xs_entero': 'el valor no es un entero (xs:integer)',
     'xs_decimal': 'el valor no es un número decimal (xs:decimal)',

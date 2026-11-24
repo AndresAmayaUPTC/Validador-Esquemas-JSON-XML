@@ -4,7 +4,9 @@
 //! Lo comparten el programa de pruebas (`examples/dpda`) y el de medición (`bench`). Usa memoria
 //! dinámica, pero solo para guardar las tablas: el motor las recibe como rebanadas prestadas.
 
-use validador::automata::{Arista, Automata, Decimal, Dependencia, NodoTrie, Prueba, Transicion};
+use validador::automata::{
+    Arista, Automata, Decimal, Dependencia, Grupo, NodoTrie, Prueba, Transicion,
+};
 
 #[derive(Default)]
 pub struct Tablas {
@@ -12,6 +14,7 @@ pub struct Tablas {
     delta: Vec<u32>,
     trie: Vec<u32>,
     otra: Vec<u32>,
+    patron: Vec<u32>,
     retorno: Vec<u32>,
     transiciones: Vec<Transicion>,
     pruebas: Vec<Prueba>,
@@ -19,6 +22,9 @@ pub struct Tablas {
     digitos: Vec<u8>,
     mascaras: Vec<u64>,
     dependencias: Vec<Dependencia>,
+    grupos: Vec<Grupo>,
+    ramas: Vec<u32>,
+    huellas: Vec<u64>,
     trie_nodos: Vec<NodoTrie>,
     trie_aristas: Vec<Arista>,
 }
@@ -31,12 +37,15 @@ impl Tablas {
             "delta" => self.delta = v.iter().map(u).collect(),
             "trie" => self.trie = v.iter().map(u).collect(),
             "otra" => self.otra = v.iter().map(u).collect(),
+            "patron" => self.patron = v.iter().map(u).collect(),
             "retorno" => self.retorno = v.iter().map(u).collect(),
             "digitos" => self.digitos = v.iter().map(|x| *x as u8).collect(),
             "mascaras" => self.mascaras = v.iter().map(|x| *x as u64).collect(),
+            "ramas" => self.ramas = v.iter().map(u).collect(),
+            "huellas" => self.huellas = v.iter().map(|x| *x as u64).collect(),
             "transiciones" => {
                 self.transiciones = v
-                    .chunks(13)
+                    .chunks(16)
                     .map(|c| Transicion {
                         destino: u(&c[0]),
                         desapila: c[1] != 0,
@@ -51,6 +60,9 @@ impl Tablas {
                         pruebas: u(&c[10]),
                         n_pruebas: u(&c[11]),
                         pendientes: u(&c[12]),
+                        hilos: u(&c[13]),
+                        n_hilos: u(&c[14]),
+                        recoger: c[15] != 0,
                     })
                     .collect()
             }
@@ -84,6 +96,16 @@ impl Tablas {
                     })
                     .collect()
             }
+            "grupos" => {
+                self.grupos = v
+                    .chunks(3)
+                    .map(|c| Grupo {
+                        clase: c[0] as u8,
+                        ramas: u(&c[1]),
+                        n_ramas: u(&c[2]),
+                    })
+                    .collect()
+            }
             "trie_nodos" => {
                 self.trie_nodos = v
                     .chunks(3)
@@ -96,15 +118,23 @@ impl Tablas {
             }
             "trie_aristas" => {
                 self.trie_aristas = v
-                    .chunks(2)
+                    .chunks(3)
                     .map(|c| Arista {
-                        byte: c[0] as u8,
-                        destino: u(&c[1]),
+                        desde: c[0] as u8,
+                        hasta: c[1] as u8,
+                        destino: u(&c[2]),
                     })
                     .collect()
             }
             otro => panic!("tabla desconocida: {otro}"),
         }
+    }
+
+    /// True si el autómata crea sub-ejecuciones o usa huellas: hace falta un validador con sitio
+    /// para ellas.
+    #[allow(dead_code)] // lo usa bench
+    pub fn hilos_o_huellas(&self) -> bool {
+        !self.grupos.is_empty() || self.cabecera[7] != 0
     }
 
     pub fn automata(&self) -> Automata<'_> {
@@ -114,9 +144,13 @@ impl Tablas {
             acepta: self.cabecera[2] as u32,
             pila_inicial: self.cabecera[3] as u32,
             palabras: self.cabecera[4] as usize,
+            fin_hilo: self.cabecera[5] as u32,
+            pila_hilo: self.cabecera[6] as u32,
+            usa_huellas: self.cabecera[7] != 0,
             delta: &self.delta,
             trie: &self.trie,
             otra: &self.otra,
+            patron: &self.patron,
             retorno: &self.retorno,
             transiciones: &self.transiciones,
             pruebas: &self.pruebas,
@@ -124,6 +158,9 @@ impl Tablas {
             digitos: &self.digitos,
             mascaras: &self.mascaras,
             dependencias: &self.dependencias,
+            grupos: &self.grupos,
+            ramas: &self.ramas,
+            huellas: &self.huellas,
             trie_nodos: &self.trie_nodos,
             trie_aristas: &self.trie_aristas,
         }

@@ -10,6 +10,7 @@ import random
 from collections import deque
 from decimal import Decimal
 
+from ..automata import expresiones
 from ..automata.compilar import Compilado
 from ..xsd.interprete import fallos, validar_xml
 from ..xsd.modelo import pruebas_lexicas
@@ -110,6 +111,9 @@ class GeneradorXML:
 
     def _candidato(self, simple):
         rng = self.rng
+        grupos = [p[1] for p in simple.pruebas if p[0] == 'patron']
+        if grupos and rng.random() < 0.8:   # un texto sacado del propio AFD de los patrones
+            return expresiones.ejemplo(grupos, rng, rng.randint(1, 8))
         if simple.base == 'boolean':
             return rng.choice(['true', 'false', '1', '0'])
         enumerados = [set(p[1]) for p in simple.pruebas if p[0] in ('enum_cad', 'enum_num')]

@@ -16,6 +16,7 @@ import random
 from dataclasses import dataclass
 from decimal import Decimal
 
+from ..automata import expresiones
 from ..automata.compilar import Compilado
 from ..automata.formas import construir_formas
 from ..automata.interprete import falla, validar
@@ -93,6 +94,10 @@ class Generador:
                 raise _Imposible
             largos = {bajo, min(alto, bajo + 3), min(alto, MAX_LONGITUD)}
             candidatas = [''.join(self.rng.choice('abcxyz ñ€😀') for _ in range(n)) for n in sorted(largos) if n >= bajo]
+            patrones = [p[1] for p in pruebas if p[0] == 'patron']
+            if patrones:   # cadenas sacadas del AFD de los patrones
+                ejemplos = (expresiones.ejemplo(patrones, self.rng, largo=max(bajo, 3)) for _ in range(6))
+                candidatas += [c for c in ejemplos if c is not None]
         validas = [c for c in candidatas if not any(falla(p, Token('CADENA', 0, 0, c)) for p in pruebas)]
         if not validas:
             raise _Imposible

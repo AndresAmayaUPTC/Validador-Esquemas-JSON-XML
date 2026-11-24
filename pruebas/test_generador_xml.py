@@ -48,7 +48,7 @@ def test_tablas_planas_de_xml():
 def crates(tmp_path_factory, cargo):  # noqa: F811
     raiz = tmp_path_factory.mktemp('generados_xml')
     resultado = {}
-    for nombre in ('pedido', 'valores'):
+    for nombre in ('pedido', 'valores', 'patron'):
         c = compilado(nombre)
         casos = generar_casos(c, 10, 10, 6, semilla=4)
         carpeta = generar_crate(c, raiz / nombre, f'validador_xml_{nombre}', casos=casos, origen=f'{nombre}.xsd')

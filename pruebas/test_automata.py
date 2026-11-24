@@ -68,8 +68,10 @@ EXACTOS = {
     'libre': {},
 }
 
-# Esquemas con palabras clave en verificación diferida: el autómata comprueba solo una parte.
-DIFERIDOS = {
+# Esquemas fuera del DPDA puro que se verifican por completo con las estrategias de respaldo: AFD de las
+# expresiones regulares, aritmética exacta, huellas de los valores y sub-ejecuciones (producto de
+# autómatas en ejecución). Su veredicto también debe coincidir siempre con el del oráculo.
+RESPALDO = {
     'patron': {'type': 'object', 'properties': {'a': {'type': 'string', 'pattern': '^a+$', 'maxLength': 3}}, 'required': ['a']},
     'unicos': {'type': 'array', 'uniqueItems': True, 'items': {'type': 'integer'}},
     'negacion': {'not': {'type': 'string'}, 'type': ['string', 'integer']},
@@ -81,6 +83,25 @@ DIFERIDOS = {
     'patrones': {'type': 'object', 'patternProperties': {'^x': {'type': 'integer'}}, 'additionalProperties': False,
                  'properties': {'a': {'type': 'null'}}},
     'nombres': {'propertyNames': {'maxLength': 2}, 'dependentSchemas': {'a': {'required': ['b']}}, 'required': ['c']},
+    'una_ambigua': {'oneOf': [{'type': 'integer', 'minimum': 0}, {'type': 'number', 'maximum': 10},
+                              {'type': 'object', 'required': ['a']}, {'type': 'object', 'required': ['b']}]},
+    'anidados': {'type': 'array', 'items': {'anyOf': [
+        {'type': 'object', 'properties': {'v': {'not': {'const': 0}}}, 'required': ['v']},
+        {'type': 'object', 'properties': {'w': {'type': 'array', 'uniqueItems': True, 'contains': {'type': 'string'}}}}]}},
+    'contadores': {'type': 'array', 'contains': {'type': 'integer'}, 'minContains': 2, 'maxContains': 3,
+                   'allOf': [{'contains': {'type': 'string'}}]},
+    'claves': {'type': 'object', 'propertyNames': {'pattern': '^[a-z]+$'},
+               'patternProperties': {'^a': {'type': 'integer'}, 'b$': {'minimum': 3}},
+               'properties': {'ab': {'maximum': 10}}, 'additionalProperties': {'type': 'string'}},
+}
+
+# Esquemas con palabras clave que quedan en verificación diferida: el autómata comprueba solo una parte.
+DIFERIDOS = {
+    'patron_no_regular': {'type': 'object', 'properties': {'a': {'type': 'string', 'pattern': '^(a+)b\\1$', 'maxLength': 5}},
+                          'required': ['a']},
+    'multiplo_largo': {'type': 'number', 'multipleOf': 1234567890123456789012, 'minimum': 0},   # 22 dígitos
+    'anticipacion': {'type': 'object', 'patternProperties': {'^(?=x)': {'type': 'integer'}},
+                     'properties': {'n': {'type': 'null'}}},
 }
 
 _COMPILADOS = {}
@@ -107,9 +128,9 @@ def instancias(esquema, n=400, semilla=1):
 # ---------------------------------------------------------------------------
 # Contra el oráculo
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize('nombre', EXACTOS)
+@pytest.mark.parametrize('nombre', list(EXACTOS) + ['respaldo:' + n for n in RESPALDO])
 def test_mismo_veredicto_que_jsonschema(nombre):
-    esquema = EXACTOS[nombre]
+    esquema = RESPALDO[nombre[9:]] if nombre.startswith('respaldo:') else EXACTOS[nombre]
     oraculo = jsonschema.Draft202012Validator(esquema)
     assert compilado(esquema).automata.diferidas == []
     validos = 0
@@ -143,15 +164,68 @@ def test_esquemas_con_verificacion_diferida(nombre):
 
 
 def test_lista_de_diferidas():
-    assert compilado(DIFERIDOS['patron']).automata.diferidas == [('/properties/a', 'pattern')]
-    assert compilado(DIFERIDOS['ambiguo']).automata.diferidas == [('', 'anyOf')]
-    assert compilado(DIFERIDOS['patrones']).automata.diferidas == [('', 'additionalProperties'), ('', 'patternProperties')]
-    # el despacho por el primer token resuelve estos sin diferir nada
-    assert compilado(EXACTOS['despacho']).automata.diferidas == []
-    r = correr(DIFERIDOS['ambiguo'], 3)
-    assert (r.estado, r.pendientes) == ('pendiente', 1)       # dos ramas admiten un número
-    assert correr(DIFERIDOS['ambiguo'], 'x').estado == 'valido'  # una sola rama admite una cadena
-    assert correr(DIFERIDOS['ambiguo'], None).estado == 'invalido'
+    assert compilado(DIFERIDOS['patron_no_regular']).automata.diferidas == [('/properties/a', 'pattern')]
+    assert compilado(DIFERIDOS['multiplo_largo']).automata.diferidas == [('', 'multipleOf')]
+    assert compilado(DIFERIDOS['anticipacion']).automata.diferidas == [('', 'patternProperties')]
+    # las estrategias de respaldo no dejan nada diferido
+    assert all(compilado(e).automata.diferidas == [] for e in RESPALDO.values())
+    r = correr(DIFERIDOS['patron_no_regular'], {'a': 'aba'})
+    assert (r.estado, r.pendientes) == ('pendiente', 1)
+    assert correr(DIFERIDOS['patron_no_regular'], {'a': 'abaaaa'}).detalle == [(6, 'long_max')]
+
+
+def test_ambiguedad_resuelta_con_sub_ejecuciones():
+    ambiguo = RESPALDO['ambiguo']
+    assert correr(ambiguo, 3).estado == 'valido'                  # cumple la rama de los enteros
+    assert correr(ambiguo, 7.5).estado == 'valido'                # cumple la de number ≥ 5
+    assert correr(ambiguo, 2.5).detalle == [(0, 'anyOf')]         # no cumple ninguna de las dos
+    assert correr(ambiguo, 'x').estado == 'valido'                # una sola rama admite cadenas: despacho
+    assert correr(ambiguo, None).detalle == [(0, 'no admitido')]  # ninguna admite null
+    una = RESPALDO['una_ambigua']
+    assert correr(una, 20).estado == 'valido' and correr(una, -3).estado == 'valido'
+    assert correr(una, 5).detalle == [(0, 'oneOf')]               # cumplen dos ramas
+    assert correr(una, {'a': 1, 'b': 2}).detalle == [(15, 'oneOf')]   # al cerrar el objeto
+    # la ruta de la violación es la del valor
+    r = correr({'properties': {'x': ambiguo}}, {'x': 2.5})
+    assert (r.ruta, r.detalle) == ('/x', [(6, 'anyOf')])
+
+
+def test_tres_valores_con_comprobaciones_diferidas():
+    # una rama con un patrón no regular da «quizá»: anyOf cumple si otra rama cumple seguro
+    quiza = {'anyOf': [{'type': 'string', 'pattern': '^(a)\\1$'}, {'type': 'string', 'maxLength': 1}]}
+    assert correr(quiza, 'x').estado == 'valido'
+    assert (correr(quiza, 'aa').estado, correr(quiza, 'aa').pendientes) == ('pendiente', 1)
+    assert correr({'not': quiza['anyOf'][0]}, 'aa').estado == 'pendiente'
+    assert correr({'not': quiza['anyOf'][0]}, 5).estado == 'valido'   # el not de algo que no admite números
+
+
+def test_huellas_y_multiplos():
+    unicos = {'uniqueItems': True}
+    assert correr(unicos, [1, 1.0]).detalle == [(7, 'unicos')]        # 1 y 1.0 son el mismo valor
+    assert correr(unicos, [{'a': 1, 'b': [2]}, {'b': [2.0], 'a': 1}]).estado == 'invalido'  # el orden no importa
+    assert correr(unicos, b'["a", "\\u0061"]').estado == 'invalido'
+    assert correr(unicos, [[1, 2], [2, 1], {'a': 1}, {'a': '1'}, 'x']).estado == 'valido'
+    # si no caben las huellas, la comprobación queda pendiente
+    r = correr(unicos, list(range(20)), max_huellas=8)
+    assert (r.estado, r.pendientes) == ('pendiente', 1)
+    assert correr(unicos, [5, 5] + list(range(20)), max_huellas=8).estado == 'invalido'
+    constante = {'const': {'a': [1, {'b': None}]}}
+    assert correr(constante, b'{"a": [1.0, {"b": null}]}').estado == 'valido'
+    assert correr(constante, b'{"a": [1, {"b": null}, 2]}').detalle == [(25, 'enum_huella')]
+    multiplo = {'multipleOf': 0.01}
+    assert correr(multiplo, b'0.07').estado == 'valido'                # exacto: no hay error de redondeo
+    assert correr(multiplo, b'0.075').detalle == [(0, 'multiplo')]
+    assert correr(multiplo, b'7e300').estado == 'valido' and correr(multiplo, b'7e-300').estado == 'invalido'
+    assert correr({'multipleOf': 7}, b'1e100').estado == 'invalido'    # 10^100 no es múltiplo de 7
+    assert correr({'multipleOf': 7}, b'7e100').estado == 'valido'
+
+
+def test_limite_de_sub_ejecuciones():
+    # cada nivel de anidamiento abre un anyOf ambiguo de dos ramas que siguen vivas hasta el final
+    anidado = {'anyOf': [{'type': 'array', 'items': {'$ref': '#'}}, {'type': 'array', 'maxItems': 5}]}
+    assert correr(anidado, b'[[[[[[[[]]]]]]]]').estado == 'valido'
+    r = correr(anidado, b'[[[[[[[[[[]]]]]]]]]]', max_hilos=16)
+    assert (r.estado, r.error) == ('limite', (8, 'demasiadas sub-ejecuciones'))
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +373,11 @@ def bruto(esquema):
     return construir(analizar_fuente(json.dumps(esquema).encode()))
 
 
-@pytest.mark.parametrize('nombre', list(EXACTOS) + ['diferido:' + n for n in DIFERIDOS])
+@pytest.mark.parametrize('nombre', list(EXACTOS) + ['diferido:' + n for n in DIFERIDOS]
+                         + ['respaldo:' + n for n in RESPALDO])
 def test_el_automata_es_un_dpda_valido(nombre):
-    esquema = DIFERIDOS[nombre[9:]] if nombre.startswith('diferido:') else EXACTOS[nombre]
+    esquema = (DIFERIDOS[nombre[9:]] if nombre.startswith('diferido:') else RESPALDO[nombre[9:]]
+               if nombre.startswith('respaldo:') else EXACTOS[nombre])
     for a in (bruto(esquema), compilado(esquema).automata):
         v = verificar(a)
         assert v.problemas == []
@@ -340,9 +416,9 @@ def test_la_verificacion_detecta_automatas_incorrectos():
     assert estropear(lambda a, q: None) == ''
 
 
-@pytest.mark.parametrize('nombre', EXACTOS)
+@pytest.mark.parametrize('nombre', list(EXACTOS) + ['respaldo:' + n for n in RESPALDO])
 def test_minimizar_no_cambia_el_comportamiento(nombre):
-    esquema = EXACTOS[nombre]
+    esquema = RESPALDO[nombre[9:]] if nombre.startswith('respaldo:') else EXACTOS[nombre]
     sin_minimizar, minimo = bruto(esquema), compilado(esquema).automata
     assert len(minimo.estados) <= len(verificar(sin_minimizar).alcanzables)
     for doc in instancias(esquema, 150, semilla=9):
@@ -374,7 +450,8 @@ def test_tamano_y_descripcion():
     assert 'M = (Q, Σ, Γ, δ, q0, Z0, F, w)' in texto and 'Verificado.' in texto
     assert 'clave "edad"' in texto and 'es entero; ≤ 150; ≥ 0' in texto and "∈ {'admin', 'user'}" in texto
     assert 'requiere 0b110' in texto   # bits por orden alfabético: activo, edad, nombre, rol
-    assert 'VERIFICACIÓN DIFERIDA' in describir(compilado(DIFERIDOS['patron']))
+    assert 'VERIFICACIÓN DIFERIDA' in describir(compilado(DIFERIDOS['patron_no_regular']))
+    assert 'anyOf' in describir(compilado(RESPALDO['ambiguo']))   # el grupo de sub-ejecuciones
     dot = a_dot(c)
     assert dot.startswith('digraph M {') and 'style=dashed' in dot and 'shape=doublecircle' in dot
     assert json.loads(json.dumps(c.automata.a_dict()))['estados'] == c.automata.estados

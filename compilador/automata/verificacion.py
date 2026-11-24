@@ -11,6 +11,9 @@ verificar() comprueba, sin ejecutar ningún documento, que el autómata es un DP
                  Z0, que cada acción actúa sobre un marco de su clase y que solo se acepta con la pila
                  en Z0.
 
+Las sub-ejecuciones empiezan en el estado de cada rama con la pila en Zh: el punto fijo las recorre
+igual que la ejecución principal, y Zh tampoco se puede desapilar.
+
 De paso se obtiene el tamaño de δ en su forma expandida δ(q, a, Z).
 
 minimizar() fusiona los estados (y los símbolos de pila) que se comportan igual, con el mismo
@@ -91,6 +94,7 @@ def verificar(a: Automata) -> Verificacion:
                     cola.append((q, z))
 
     llegar(a.inicial, a.pila_inicial)
+    fondos = {a.pila_inicial, a.pila_hilo} - {None}
     while cola:
         q, z = cola.popleft()
         primera_vez = (q, z) not in vistos
@@ -100,8 +104,10 @@ def verificar(a: Automata) -> Verificacion:
                 clase = CLASE_DE_ACCION.get(t.accion[0]) if t.accion else None
                 if clase and a.clase_pila[z] != clase:
                     problemas.append(f'{nombre(q)} con {s}: la acción «{t.accion[0]}» actúa sobre {a.simbolos_pila[z]}')
-                if (t.desapila or t.cima is not None) and z == a.pila_inicial:
+                if (t.desapila or t.cima is not None) and z in fondos:
                     problemas.append(f'{nombre(q)} con {s}: modifica el fondo de la pila')
+                if t.hilos and a.pila_hilo is None:
+                    problemas.append(f'{nombre(q)} con {s}: crea sub-ejecuciones pero no hay fondo para ellas')
                 if t.desapila and (t.cima is not None or t.apila is not None):
                     problemas.append(f'{nombre(q)} con {s}: desapila y apila a la vez')
             if t.desapila:
@@ -120,6 +126,11 @@ def verificar(a: Automata) -> Verificacion:
                 nuevas = [cima]
             for cima in nuevas:
                 llegar(a.retorno[cima] if t.destino is RETORNO else t.destino, cima)
+            if a.pila_hilo is not None:
+                for _, inicios in t.hilos:
+                    for inicio in inicios:
+                        if inicio is not None:
+                            llegar(inicio, a.pila_hilo)
 
     for q in a.finales:
         if cimas[q] - {a.pila_inicial}:
@@ -141,7 +152,7 @@ def minimizar(a: Automata) -> Automata:
         numeros = {}
         return {x: numeros.setdefault(f, len(numeros)) for x, f in firmas.items()}, len(numeros)
 
-    bq, nq = numerar({q: q in a.finales for q in vivos})
+    bq, nq = numerar({q: (q in a.finales, q == a.fin_hilo) for q in vivos})
     bz, nz = numerar({z: a.clase_pila[z] for z in simbolos})
     while True:
         # un símbolo de pila se distingue por su clase y por el estado al que hace volver
@@ -149,7 +160,8 @@ def minimizar(a: Automata) -> Automata:
         fq = {q: (bq[q], frozenset(
             (s, None if t.destino is RETORNO else bq[t.destino], t.desapila,
              None if t.cima is None else bz[t.cima], None if t.apila is None else bz[t.apila],
-             t.accion, t.peso, t.pruebas, t.pendientes) for s, t in a.delta[q].items())) for q in vivos}
+             t.accion, t.peso, t.pruebas, t.pendientes, hilos(t.hilos, bq), t.recoger)
+            for s, t in a.delta[q].items())) for q in vivos}
         (nbq, nnq), (nbz, nnz) = numerar(fq), numerar(fz)
         estable = (nnq, nnz) == (nq, nz)
         bq, nq, bz, nz = nbq, nnq, nbz, nnz
@@ -170,10 +182,17 @@ def minimizar(a: Automata) -> Automata:
     mapa_z = lambda z: None if z is None else bz[z]
     for bloque, q in representante_q.items():
         m.delta[bloque] = {s: replace(t, destino=None if t.destino is RETORNO else bq[t.destino],
-                                      cima=mapa_z(t.cima), apila=mapa_z(t.apila))
+                                      cima=mapa_z(t.cima), apila=mapa_z(t.apila), hilos=hilos(t.hilos, bq))
                            for s, t in a.delta[q].items()}
     for bloque, z in representante_z.items():
         m.retorno[bloque] = bq.get(a.retorno[z])
     m.inicial, m.pila_inicial = bq[a.inicial], bz[a.pila_inicial]
     m.finales = frozenset(bq[q] for q in a.finales if q in bq)
+    m.fin_hilo = bq.get(a.fin_hilo)
+    m.pila_hilo = bz.get(a.pila_hilo)
     return m
+
+
+def hilos(grupos, bloque):
+    """Los grupos de sub-ejecuciones con cada estado inicial cambiado por su bloque."""
+    return tuple((clase, tuple(None if q is None else bloque[q] for q in inicios)) for clase, inicios in grupos)

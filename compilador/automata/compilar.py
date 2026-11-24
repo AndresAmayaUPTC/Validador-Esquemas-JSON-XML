@@ -58,10 +58,17 @@ _REFINADO = {'CLAVE': ('clave', 'otra clave'), 'ELEM': ('elemento', 'otro elemen
              'ATRIB': ('atributo', 'otro atributo'), 'CIERRE': ('cierre', 'cierre de otro nombre')}
 
 
+# cómo se muestra cada grupo de sub-ejecuciones
+NOMBRE_GRUPO = {'alguna': 'anyOf', 'una': 'oneOf', 'no': 'not', 'si': 'if/then/else', 'dependiente': 'dependentSchemas',
+                'nombres': 'propertyNames', 'contiene': 'contains', 'cumple': 'contains'}
+
+
 def _simbolo(s):
     if isinstance(s, str):
         return s
     nombre, otro = _REFINADO[s[0]]
+    if isinstance(s[1], frozenset):
+        return 'otra clave que casa con ' + ', '.join(f'/{p}/' for p in sorted(s[1]))
     return otro if s[1] is None else f'{nombre} "{s[1]}"'
 
 
@@ -75,6 +82,18 @@ def _prueba(p):
         return {('min', False): '≥', ('min', True): '>', ('max', False): '≤', ('max', True): '<'}[clase, p[2]] + f' {p[1]}'
     if clase in ('long_min', 'long_max'):
         return f'longitud {"≥" if clase == "long_min" else "≤"} {p[1]}'
+    if clase == 'patron' and isinstance(p[1], tuple):   # XSD: el valor completo, alguna de las alternativas
+        return 'es ' + ' o '.join(f'/{x}/' for x in p[1]) + (' (sin espacios a los lados)' if p[2] else '')
+    if clase == 'patron':
+        return f'casa con /{p[1]}/'
+    if clase == 'multiplo':
+        return f'múltiplo de {p[1]}'
+    if clase == 'enum_huella':
+        return f'huella ∈ {{{len(p[1])} valores}}'
+    if clase == 'unicos':
+        return 'elementos únicos'
+    if clase == 'contiene':
+        return f'contains entre {p[1]} y {"∞" if p[2] is None else p[2]}'
     return '∈ {' + ', '.join(repr(x) if isinstance(x, str) else str(x) for x in p[1]) + '}'
 
 
@@ -115,6 +134,11 @@ def _efecto(a, t):
     extra += [_prueba(p) for p in t.pruebas]
     if t.pendientes:
         extra.append(f'diferidas={t.pendientes}')
+    for clase, inicios in t.hilos:
+        ramas = ', '.join('—' if q is None else a.estados[q] for q in inicios)
+        extra.append(f'nacen {NOMBRE_GRUPO[clase]}({ramas})')
+    if t.recoger:
+        extra.append('guarda huellas')
     return partes, '; '.join(extra)
 
 

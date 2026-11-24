@@ -297,13 +297,39 @@ def test_contenido_vacio_libre_y_simple_con_atributos():
     assert validar_xml(a, b'<nota><b/></nota>').estado == 'invalido'
 
 
-def test_pattern_queda_pendiente():
+def test_pattern_con_afd():
     c = compilado('patron')
-    assert c.automata.diferidas == [('/element[usuario]/complexType/sequence/element[correo]/simpleType/restriction/pattern', 'pattern')]
-    assert [d.codigo for d in c.analisis.avisos] == ['diferida'] and c.analisis.nivel == 'c'
-    r = validar_xml(c.automata, b'<usuario><correo>a@b</correo><edad>30</edad></usuario>')
+    assert c.automata.diferidas == [] and c.analisis.avisos == [] and c.analisis.nivel == 'c'
+    usuario = lambda correo='a@b', edad='30', codigos=(), pais='CO': (
+        f'<usuario pais="{pais}"><correo>{correo}</correo><edad>{edad}</edad>'
+        + ''.join(f'<codigo>{x}</codigo>' for x in codigos) + '</usuario>').encode()
+    motivos = lambda **k: [m for _, m in validar_xml(c.automata, usuario(**k)).detalle]
+    assert motivos(codigos=('AB-123', 'XX', 'X')) == []          # dos pattern del mismo paso: «o»
+    assert motivos(codigos=('AB-129',)) == ['patron']            # el pattern del tipo derivado también cuenta: «y»
+    assert motivos(codigos=('ab-123',)) == ['patron']
+    assert motivos(correo='a b@c') == ['patron'] and motivos(correo='a@b@c') == ['patron']
+    assert motivos(edad=' 42 ') == [] and motivos(edad='123') == ['patron']   # entero: sin los espacios de los lados
+    assert motivos(edad='x') == ['xs_entero']                    # sin la forma léxica no se mira el patrón
+    assert motivos(pais='Ñu') == ['patron'] and motivos(pais='ÑU') == []     # \p{Lu} en un atributo
+    assert validar_xml(c.automata, usuario(pais='C')).ruta == '/usuario/@pais'
+
+
+def test_pattern_que_no_se_compila_queda_pendiente():
+    c = compilado('patron_diferido')
+    assert c.automata.diferidas == [('/element[nota]/simpleType/restriction/pattern', 'pattern')]
+    assert [d.codigo for d in c.analisis.avisos] == ['diferida']
+    r = validar_xml(c.automata, b'<nota>hola</nota>')
     assert (r.estado, r.pendientes, r.violaciones) == ('pendiente', 1, 0)
-    assert validar_xml(c.automata, b'<usuario><correo>a@b</correo><edad>300</edad></usuario>').estado == 'invalido'
+    assert validar_xml(c.automata, ('<nota>' + 'x' * 21 + '</nota>').encode()).estado == 'invalido'
+
+
+@pytest.mark.parametrize('patron', ['(', '[a', 'a{,2}', '\\q', '\\p{Xx}', 'a+?'])
+def test_pattern_invalido_es_un_error(patron):
+    esquema = xsd(f'<xs:element name="a"><xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="{patron}"/>'
+                  '</xs:restriction></xs:simpleType></xs:element>')
+    with pytest.raises(ErrorDeEsquema) as e:
+        compilar_xsd(esquema)
+    assert [d.codigo for d in e.value.analisis.errores] == ['expresion-invalida']
 
 
 def test_limites():
@@ -354,14 +380,14 @@ def test_casos_generados(nombre):
     casos = generar_casos_xml(compilado(nombre), 6, 6, 4, semilla=3)
     por_clase = {clase: [c for c in casos if c.clase == clase] for clase in ('valido', 'invalido', 'malformado')}
     assert [len(v) for v in por_clase.values()] == [6, 6, 4]
-    esperado = 'pendiente' if nombre == 'patron' else 'valido'
+    esperado = 'pendiente' if nombre == 'patron_diferido' else 'valido'
     assert all(c.estado == esperado and c.violaciones == 0 for c in por_clase['valido'])
     assert all(c.estado == 'invalido' and c.violaciones > 0 for c in por_clase['invalido'])
     assert all(c.estado == 'malformado' for c in por_clase['malformado'])
     assert casos == generar_casos_xml(compilado(nombre), 6, 6, 4, semilla=3)   # determinista
 
 
-@pytest.mark.parametrize('nombre', sorted(set(ESQUEMAS) - {'patron'}))
+@pytest.mark.parametrize('nombre', sorted(set(ESQUEMAS) - {'patron_diferido'}))
 def test_mismo_veredicto_que_xmlschema(nombre):
     c, oraculo = compilado(nombre), xmlschema.XMLSchema(io.BytesIO(ESQUEMAS[nombre]))
     g, validos, invalidos = GeneradorXML(c, semilla=11), 0, 0

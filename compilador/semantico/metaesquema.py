@@ -7,6 +7,8 @@ que no haya elementos repetidos o que un intervalo no esté vacío.
 """
 from decimal import Decimal, InvalidOperation
 
+from ..automata.expresiones import ErrorDeExpresion, NoRegular, analizar as analizar_expresion
+
 TIPOS = ('null', 'boolean', 'object', 'array', 'number', 'string', 'integer')
 DIALECTO = 'https://json-schema.org/draft/2020-12/schema'
 ENTEROS_NO_NEGATIVOS = ('maxLength', 'minLength', 'maxItems', 'minItems', 'maxContains', 'minContains',
@@ -93,11 +95,27 @@ def _verificar_clave(c, ruta, es_raiz, diag):
                 diag.error('repetido', f'«{r}» está repetida en las dependencias de «{propiedad}»', lista, ruta)
         for r in _repetidos(k for k, _ in v.dato):
             diag.error('entrada-duplicada', f'«{r}» está repetida en «dependentRequired»', v, ruta)
+    elif nombre == 'pattern':
+        _verificar_expresion(v.dato, v, ruta, diag)
+    elif nombre == 'patternProperties':
+        for entrada in v:
+            _verificar_expresion(entrada.nombre, entrada, ruta, diag)
     elif nombre == 'enum':
         if not v.dato:
             diag.aviso('enum-vacio', '«enum» está vacío: ningún valor lo cumple', v, ruta)
         elif len({_congelar(x) for x in v.dato}) < len(v.dato):
             diag.aviso('enum-repetido', '«enum» tiene valores repetidos', v, ruta)
+
+
+def _verificar_expresion(texto, nodo, ruta, diag):
+    """Una expresión de ECMA-262 mal escrita es un error del esquema (que no sea regular, no: queda en
+    verificación diferida)."""
+    try:
+        analizar_expresion(texto)
+    except ErrorDeExpresion as e:
+        diag.error('expresion-invalida', f'la expresión regular «{texto}» no es válida: {e}', nodo, ruta)
+    except NoRegular:
+        pass
 
 
 def _verificar_intervalos(esquema, ruta, diag):

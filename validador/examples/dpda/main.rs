@@ -18,6 +18,7 @@
 use std::io::{self, BufRead, Write as _};
 
 use validador::automata::Automata;
+use validador::validador::{EJECUCIONES, HUELLAS};
 use validador::{Resultado, Validador, ValidadorXml};
 
 mod cargar;
@@ -45,9 +46,9 @@ fn caso(automata: &Automata<'_>, xml: bool, campos: &[&str]) -> String {
         .unwrap_or(u64::MAX);
     // El validador ocupa bastante con estas capacidades; se deja en el montón para no cargar la pila.
     macro_rules! correr {
-        ($tipo:ident) => {{
+        ($tipo:ty) => {{
             let mut v = Box::new(
-                $tipo::<D, W>::new(automata)
+                <$tipo>::new(automata)
                     .con_profundidad(profundidad)
                     .con_fallo_temprano(campos[3] == "1")
                     .con_limite_de_bytes(max_bytes),
@@ -66,9 +67,10 @@ fn caso(automata: &Automata<'_>, xml: bool, campos: &[&str]) -> String {
         }};
     }
     let r: Resultado = if xml {
-        correr!(ValidadorXml)
+        correr!(ValidadorXml<'_, D, W>)
     } else {
-        correr!(Validador)
+        // con sitio para las sub-ejecuciones y las huellas, como el intérprete por omisión
+        correr!(Validador<'_, D, W, EJECUCIONES, HUELLAS, D>)
     };
     let par = |p: Option<(u64, &str)>| p.map_or("- -".to_string(), |(pos, n)| format!("{pos} {n}"));
     let ruta = if r.primera.is_none() && r.error.is_none() {
@@ -96,6 +98,17 @@ fn caso(automata: &Automata<'_>, xml: bool, campos: &[&str]) -> String {
 }
 
 fn main() {
+    // Con estas capacidades y 17 ejecuciones el validador ocupa unos megabytes, y `Box::new` lo
+    // construye primero en la pila: se trabaja en un hilo con pila grande.
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(principal)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn principal() {
     let mut out = io::BufWriter::new(io::stdout().lock());
     let mut tablas = Tablas::default();
     let mut xml = false;

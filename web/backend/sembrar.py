@@ -3,7 +3,9 @@
     python -m web.backend.sembrar        # los inserta (o actualiza) en el almacén configurado
 
 El resultado esperado de cada caso lo calcula el intérprete de referencia en el momento de sembrar.
-Los identificadores salen del nombre, así que sembrar dos veces no duplica nada.
+Los identificadores salen del nombre, así que sembrar dos veces no duplica nada. Los casos sembrados llevan
+"origen": "propuesta"; al sembrar se borran los de ese origen que ya no están en la lista (y los de
+RETIRADOS, sembrados antes de que existiera la marca). Los casos creados por la API no se tocan.
 """
 import base64
 import hashlib
@@ -47,12 +49,13 @@ ARBOL = {
         'v': {'type': 'integer'}, 'h': {'type': 'array', 'items': {'$ref': '#/$defs/nodo'}, 'maxItems': 2}}}},
     '$ref': '#/$defs/nodo',
 }
-FUERA_DEL_DPDA = {
+FUERA_DEL_DPDA = {   # cada palabra clave con su estrategia de respaldo
     'type': 'object',
     'properties': {
-        'codigo': {'type': 'string', 'pattern': '^[A-Z]{3}-[0-9]+$', 'maxLength': 12},
-        'medida': {'anyOf': [{'type': 'integer'}, {'type': 'number', 'minimum': 0.5}]},
-        'lotes': {'type': 'array', 'uniqueItems': True, 'items': {'type': 'integer'}},
+        'codigo': {'type': 'string', 'pattern': '^[A-Z]{3}-[0-9]+$', 'maxLength': 12},     # AFD de la expresión
+        'medida': {'anyOf': [{'type': 'integer'}, {'type': 'number', 'minimum': 0.5}]},  # sub-ejecuciones en paralelo
+        'lotes': {'type': 'array', 'uniqueItems': True, 'items': {'type': 'integer'}},   # huellas de los elementos
+        'firma': {'type': 'string', 'pattern': '^(..)\\1$'},   # no regular (referencia hacia atrás): diferida
     },
 }
 NUMEROS = {'type': 'array', 'items': {'type': 'number', 'minimum': 0}}
@@ -62,7 +65,7 @@ EJEMPLOS = {   # lo que ofrece la interfaz para empezar: esquema y un documento
     'Pedido con referencias': (PEDIDO, {'id': 7, 'cliente': {'nombre': 'Luis'}, 'entrega': None,
                                         'lineas': [{'producto': 'lápiz', 'cantidad': 3, 'precio': 1.5}]}),
     'Árbol recursivo': (ARBOL, {'v': 1, 'h': [{'v': 2, 'h': [{'v': 4}]}, {'v': 3}]}),
-    'Fuera del DPDA puro': (FUERA_DEL_DPDA, {'codigo': 'ABC-12', 'medida': 3, 'lotes': [1, 2, 2]}),
+    'Fuera del DPDA puro': (FUERA_DEL_DPDA, {'codigo': 'ABC-12', 'medida': 3, 'lotes': [1, 2, 3]}),
 }
 
 j = lambda v: json.dumps(v, ensure_ascii=False).encode('utf-8')
@@ -87,10 +90,14 @@ CASOS = [
     ('UTF-8 inválido', 'malformado', PERSONA, b'{"nombre": "A\xffna", "edad": 30}', 'byte FF dentro de una cadena'),
     ('Clave duplicada', 'malformado', PERSONA, b'{"nombre": "Ana", "edad": 30, "edad": 31}', 'clave declarada repetida'),
     ('Número con cero inicial', 'malformado', PERSONA, b'{"nombre": "Ana", "edad": 030}', 'error léxico'),
-    ('Patrón sin verificar', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'codigo': 'abc'}), 'pattern queda en verificación diferida'),
-    ('anyOf ambiguo', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'medida': 3}), 'dos ramas admiten un número'),
-    ('uniqueItems sin verificar', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'lotes': [1, 2, 2]}), 'elementos repetidos no detectados'),
-    ('Sin comprobaciones diferidas', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'lotes': 'x'}), 'lo que sí se verifica sigue contando'),
+    ('Patrón que no casa', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'codigo': 'abc'}),
+     'pattern: AFD de la expresión regular, en la misma pasada'),
+    ('anyOf ambiguo', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'medida': 0.25}),
+     'dos ramas admiten un número: sub-ejecuciones en paralelo, y no cumple ninguna'),
+    ('uniqueItems con repetidos', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'lotes': [1, 2, 2.0]}),
+     'huellas de los elementos: 2 y 2.0 son el mismo valor'),
+    ('Patrón no regular', 'fuera-del-dpda', FUERA_DEL_DPDA, j({'firma': 'abab'}),
+     'referencia hacia atrás: no es un lenguaje regular y queda en verificación diferida'),
     ('Árbol con k = 10', 'bombeo', ARBOL, arbol(10), 'u·vᵏ·x·yᵏ·z: profundidad 21'),
     ('Árbol con k = 60', 'bombeo', ARBOL, arbol(60), 'profundidad 121, cerca del límite de 128'),
     ('Arreglo de 20 000 números', 'bombeo', NUMEROS, j(list(range(20000))), 'arreglo muy largo: la pila no crece'),
@@ -159,6 +166,9 @@ USUARIO_XSD = _XSD.format('''  <xs:element name="usuario">
           </xs:simpleType>
         </xs:element>
         <xs:element name="edad" type="xs:unsignedByte"/>
+        <xs:element name="alias" minOccurs="0">
+          <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="\\p{IsBasicLatin}+"/></xs:restriction></xs:simpleType>
+        </xs:element>
       </xs:sequence>
     </xs:complexType>
   </xs:element>''')
@@ -224,10 +234,11 @@ CASOS_XML = [
     ('XML: atributo duplicado', 'malformado', PEDIDO_XSD, _cambiar(' id="1"', ' id="1" id="2"'), 'atributo declarado repetido'),
     ('XML: UTF-8 inválido', 'malformado', PEDIDO_XSD, x(_PEDIDO_MINIMO).replace(b'Luis', b'Lu\xffis'), 'byte FF dentro del texto'),
     ('XML: entidad no definida', 'malformado', PEDIDO_XSD, _cambiar('Luis', 'Luis&nbsp;'), 'sin DTD solo existen las cinco entidades predefinidas'),
-    ('XML: pattern sin verificar', 'fuera-del-dpda', USUARIO_XSD, x('<usuario><codigo>abc</codigo><edad>30</edad></usuario>'),
-     'pattern queda en verificación diferida'),
-    ('XML: lo demás sí se verifica', 'fuera-del-dpda', USUARIO_XSD, x('<usuario><codigo>ABC-1</codigo><edad>300</edad></usuario>'),
-     'la edad fuera de rango cuenta aunque haya un pattern'),
+    ('XML: pattern que no casa', 'fuera-del-dpda', USUARIO_XSD, x('<usuario><codigo>abc</codigo><edad>30</edad></usuario>'),
+     'xs:pattern: AFD de la expresión, anclada a todo el texto'),
+    ('XML: pattern no regular', 'fuera-del-dpda', USUARIO_XSD,
+     x('<usuario><codigo>ABC-1</codigo><edad>30</edad><alias>ana</alias></usuario>'),
+     'bloque Unicode (\\p{IsBasicLatin}): queda en verificación diferida'),
     ('XML: nodos con k = 60', 'bombeo', NODO_XSD, nodos(60), 'u·vᵏ·x·yᵏ·z: profundidad 62'),
     ('XML: 5 000 medidas', 'bombeo', MEDIDAS_XSD, x('<medidas>' + ''.join(f'<m>{i}.5</m>' for i in range(5000)) + '</medidas>'),
      'secuencia muy larga: la pila no crece'),
@@ -236,6 +247,16 @@ CASOS_XML = [
      x('<medidas><m>123456789012345678901234567890.5</m><m>0.000000000000000000000000000001</m><m> +007.50 </m><m>-0.0</m></medidas>'),
      'comparación decimal exacta sobre el texto'),
 ]
+
+
+# casos que existieron con otro nombre: ya no se siembran y se borran del almacén
+RETIRADOS = ('Patrón sin verificar', 'uniqueItems sin verificar', 'Sin comprobaciones diferidas',
+             'XML: pattern sin verificar', 'XML: lo demás sí se verifica')
+ORIGEN = 'propuesta'
+
+
+def identificador(nombre: str) -> str:
+    return hashlib.sha256(nombre.encode('utf-8')).hexdigest()[:24]
 
 
 def casos() -> list:
@@ -247,7 +268,7 @@ def casos() -> list:
             compilados[texto] = compilar_esquema(texto.encode('utf-8'))
         r = validar_documento(compilados[texto], payload)
         documentos.append({
-            '_id': hashlib.sha256(nombre.encode('utf-8')).hexdigest()[:24],
+            '_id': identificador(nombre), 'origen': ORIGEN,
             'nombre': nombre, 'categoria': categoria, 'lenguaje': 'xml' if compilados[texto].xml else 'json',
             'notas': notas, 'esquema': texto,
             'payload_b64': base64.b64encode(payload).decode('ascii'),
@@ -256,17 +277,23 @@ def casos() -> list:
     return documentos
 
 
-def sembrar(repositorio) -> int:
+def sembrar(repositorio) -> tuple:
+    """Guarda los casos y borra los sembrados que ya no existen. Devuelve (guardados, borrados)."""
+    vigentes = set()
     for caso in casos():
         anterior = repositorio.obtener(caso['_id'])
         if anterior and 'ultimo' in anterior:
             caso['ultimo'] = anterior['ultimo']   # conservar las métricas ya registradas
         repositorio.guardar(caso)
-    return len(CASOS) + len(CASOS_XML)
+        vigentes.add(caso['_id'])
+    sobrantes = {identificador(n) for n in RETIRADOS} | {c['_id'] for c in repositorio.listar() if c.get('origen') == ORIGEN}
+    borrados = sum(repositorio.borrar(i) for i in sobrantes - vigentes)
+    return len(vigentes), borrados
 
 
 if __name__ == '__main__':
     from .repositorio import cargar_env
     cargar_env()
     almacen = abrir()
-    print(f'{sembrar(almacen)} casos guardados en el almacén «{almacen.nombre}».')
+    guardados, borrados = sembrar(almacen)
+    print(f'{guardados} casos guardados en el almacén «{almacen.nombre}»; {borrados} casos antiguos borrados.')

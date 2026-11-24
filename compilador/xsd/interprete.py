@@ -20,6 +20,7 @@ Límites del modelo, que el motor de Rust comparte:
 import time
 from decimal import Decimal
 
+from ..automata import expresiones
 from ..automata.dpda import RETORNO, Automata
 from ..automata.interprete import CLAVE_MAX, MAX_PROFUNDIDAD, PUNTOS, RUTA_MAX, Resultado, recortar
 from ..lexico.lexer import ErrorLexico
@@ -49,6 +50,9 @@ def falla(prueba, valor: str) -> bool:
         return len(valor) > prueba[1]
     if clase == 'enum_cad':
         return valor not in prueba[1]
+    if clase == 'patron':   # ('patron', expresiones, colapsar): el valor completo casa con alguna
+        _, textos, colapsar = prueba
+        return not expresiones.coincide_xsd(textos, valor.strip(BLANCOS) if colapsar else valor)
     recortado = valor.strip(BLANCOS)   # whiteSpace = collapse en números y booleanos
     if clase in _FORMA:
         return not _FORMA[clase](recortado)

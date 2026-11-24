@@ -3,6 +3,7 @@
 Produce valores que intentan cumplir el esquema, con errores aleatorios intercalados, de modo que salgan
 tanto documentos válidos como inválidos. No pretende ser exhaustivo: el veredicto lo da el oráculo.
 """
+from compilador.automata import expresiones
 
 BASURA = [None, True, False, 0, 1, -1, 2, 3, 5, 7, 10, 151, 1.0, 2.5, -0.5, '', 'a', 'ab', 'abc', 'admin', 'x', 'ñ',
           'abcdef', [], {}, [1], ['a', 'b'], {'a': 1}, {'x': None}]
@@ -64,11 +65,19 @@ def generar(esq, raiz, rng, prof=0):
         return n
     if tipo == 'string':
         largo = esq.get('minLength', esq.get('maxLength', 2)) + rng.choice([-1, 0, 0, 1, 2])
+        if 'pattern' in esq and rng.random() < 0.8:
+            texto = ejemplo(esq['pattern'], rng, largo)
+            if texto is not None:
+                return texto
         return ''.join(rng.choice('abñ€😀') for _ in range(max(0, largo)))
     if tipo == 'array':
         prefijo = esq.get('prefixItems', [])
         n = max(0, esq.get('minItems', esq.get('maxItems', len(prefijo) + 1)) + rng.choice([-1, 0, 0, 1, 2]))
-        return [generar(prefijo[i] if i < len(prefijo) else esq.get('items', True), raiz, rng, prof + 1) for i in range(n)]
+        valores = [generar(prefijo[i] if i < len(prefijo) else esq.get('items', True), raiz, rng, prof + 1)
+                   for i in range(n)]
+        if 'contains' in esq and rng.random() < 0.7:
+            valores.insert(rng.randint(0, len(valores)), generar(esq['contains'], raiz, rng, prof + 1))
+        return valores
     propiedades = esq.get('properties', {})
     obj = {}
     for nombre in list(propiedades) + [r for r in esq.get('required', []) if r not in propiedades]:
@@ -79,6 +88,19 @@ def generar(esq, raiz, rng, prof=0):
         if nombre in obj and rng.random() < 0.7:
             for otra in exige:
                 obj.setdefault(otra, basura(rng, prof + 1))
+    for patron, sub in esq.get('patternProperties', {}).items():
+        if rng.random() < 0.5:
+            nombre = ejemplo(patron, rng, 2)
+            if nombre is not None:
+                obj[nombre] = generar(sub, raiz, rng, prof + 1)
     if rng.random() < 0.25:
         obj[rng.choice(['extra', 'a', 'z'])] = generar(esq.get('additionalProperties', True), raiz, rng, prof + 1)
     return obj
+
+
+def ejemplo(patron, rng, largo):
+    """Una cadena que casa con el patrón, o None."""
+    try:
+        return expresiones.ejemplo([patron], rng, max(largo, 1))
+    except (expresiones.NoRegular, expresiones.ErrorDeExpresion):
+        return None

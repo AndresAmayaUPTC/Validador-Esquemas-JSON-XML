@@ -10,9 +10,10 @@
 //!
 //! Ningún valor se guarda entero. De un nombre se llevan su posición en el trie del estado, su
 //! longitud, una huella de 64 bits y sus primeros bytes (para la ruta). De un texto o un valor de
-//! atributo, su longitud en caracteres, su posición en el trie de enumeraciones y, si el tipo es
-//! numérico, el estado de dos autómatas finitos pequeños (forma de `xs:integer` y de
-//! `xs:decimal`) y hasta `NUMERO_MAX` bytes para compararlo con los límites del esquema.
+//! atributo, su longitud en caracteres, su posición en el trie de enumeraciones y en el AFD de sus
+//! facetas pattern y, si el tipo es numérico, el estado de dos autómatas finitos pequeños (forma de
+//! `xs:integer` y de `xs:decimal`) y hasta `NUMERO_MAX` bytes para compararlo con los límites del
+//! esquema.
 
 use core::cmp::Ordering;
 
@@ -217,6 +218,10 @@ struct Nucleo<'a, const D: usize, const W: usize> {
     leyendo_valor: bool,
     /// Posición en el trie del estado: nombres declarados o valores de una enumeración.
     nodo: u32,
+    /// Posición en el AFD de los patrones del valor, y si se le saltan los espacios en blanco
+    /// (whiteSpace = collapse: tipos numéricos y booleanos).
+    patron: u32,
+    colapsar: bool,
     // ---- nombre en curso ----
     largo: u32,
     huella: u64,
@@ -272,6 +277,8 @@ impl<'a, const D: usize, const W: usize> ValidadorXml<'a, D, W> {
                 fallo_temprano: false,
                 leyendo_valor: false,
                 nodo: NINGUNO,
+                patron: NINGUNO,
+                colapsar: false,
                 largo: 0,
                 huella: 0,
                 nombre: Recorte::nuevo(),
@@ -318,6 +325,7 @@ impl<'a, const D: usize, const W: usize> ValidadorXml<'a, D, W> {
         n.estado = n.a.inicial;
         n.nivel = 0;
         n.nodo = NINGUNO;
+        n.patron = NINGUNO;
         n.leyendo_valor = false;
         n.hay_atributo = false;
         n.terminado = false;
@@ -495,6 +503,15 @@ impl<const D: usize, const W: usize> Nucleo<'_, D, W> {
                     }
                     self.nodo = self.a.avanzar(self.nodo, b);
                 }
+                for &b in bytes {
+                    if self.patron == NINGUNO {
+                        break;
+                    }
+                    // en collapse, un espacio en medio ya hace fallar la forma léxica, que va antes
+                    if !(self.colapsar && matches!(b, b' ' | b'\t' | b'\n' | b'\r')) {
+                        self.patron = self.a.avanzar(self.patron, b);
+                    }
+                }
                 if self.es_numero {
                     bytes.iter().for_each(|&b| self.numerico.byte(b));
                 }
@@ -519,20 +536,26 @@ impl<const D: usize, const W: usize> Nucleo<'_, D, W> {
         let q = self.estado as usize;
         self.leyendo_valor = true;
         self.nodo = a.trie[q];
+        self.patron = a.patron[q];
         self.longitud = 0;
         self.solo_espacios = true;
         let id = a.delta[q * TOKENS + columna];
-        self.es_numero = id != NINGUNO && {
-            let t = &a.transiciones[id as usize];
-            a.pruebas[t.pruebas as usize..(t.pruebas + t.n_pruebas) as usize]
-                .iter()
-                .any(|p| {
-                    !matches!(
-                        p.clase,
-                        prueba::LONG_MIN | prueba::LONG_MAX | prueba::ENUM_CAD
-                    )
-                })
+        let pruebas = match id {
+            NINGUNO => &[][..],
+            _ => {
+                let t = &a.transiciones[id as usize];
+                &a.pruebas[t.pruebas as usize..(t.pruebas + t.n_pruebas) as usize]
+            }
         };
+        self.es_numero = pruebas.iter().any(|p| {
+            !matches!(
+                p.clase,
+                prueba::LONG_MIN | prueba::LONG_MAX | prueba::ENUM_CAD | prueba::PATRON
+            )
+        });
+        self.colapsar = pruebas
+            .iter()
+            .any(|p| p.clase == prueba::PATRON && p.b != 0);
         if self.es_numero {
             self.numerico.reiniciar();
         }
@@ -666,6 +689,12 @@ impl<const D: usize, const W: usize> Nucleo<'_, D, W> {
                     prueba::ENUM_CAD => (
                         p.a.saturating_sub(a.valor(self.nodo)),
                         Motivo::EnumCad,
+                        false,
+                    ),
+                    // el AFD da con cuántos grupos de patrones casa el valor: fallan los demás
+                    prueba::PATRON => (
+                        p.a.saturating_sub(a.valor(self.patron)),
+                        Motivo::Patron,
                         false,
                     ),
                     prueba::XS_ENTERO => {

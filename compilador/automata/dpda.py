@@ -16,6 +16,13 @@
       peso de una ejecución es la suma, es decir, el número de violaciones del documento; 0 significa
       que el documento cumple el esquema.
 
+Sub-ejecuciones (producto de autómatas en ejecución, ver nodos.py). Una transición puede hacer nacer
+grupos de sub-ejecuciones del mismo M: cada una empieza en el estado V de su rama, con su propia pila
+cuyo fondo es Zh, y lee el mismo valor que la ejecución que la crea. Como en JSON todas apilan y
+desapilan con los mismos tokens, terminan a la vez: cuando el valor acaba, su pila vuelve a Zh y el
+retorno las lleva a FIN_HILO. Entonces sus pesos se combinan en una violación (o ninguna) para la
+ejecución madre.
+
 Cada marco de pila lleva dos registros acotados: una máscara de bits (propiedades vistas) y un contador
 (propiedades o elementos). Las acciones de las transiciones los actualizan y los consultan.
 
@@ -45,6 +52,8 @@ class Transicion:
     peso: int = 0                 # violaciones fijas de la transición
     pruebas: tuple = ()           # pruebas sobre el valor del token; cada una que falla suma 1 al peso
     pendientes: int = 0           # comprobaciones en verificación diferida que se cruzan
+    hilos: tuple = ()             # grupos de sub-ejecuciones que nacen: ((clase, (estado inicial o None, ...)), ...)
+    recoger: bool = False         # el arreglo que se abre guarda las huellas de sus elementos (uniqueItems)
 
 ACCIONES = {
     'clave': '(bit o None, máximo de propiedades): cuenta la propiedad, marca su bit; repetida = mal formado',
@@ -52,6 +61,11 @@ ACCIONES = {
     'elemento': '(máximo de elementos): cuenta el elemento',
     'cerrar_arreglo': '(mínimo de elementos)',
 }
+
+# Pruebas de las transiciones que cierran un objeto o un arreglo (se evalúan antes de desapilar):
+#   ('enum_huella', huellas)    la huella del valor cerrado está entre las del enum o el const
+#   ('contiene', mín, máx)      el contador de elementos que cumplen contains está en [mín, máx]
+#   ('unicos',)                 ninguna huella de elemento se repitió (uniqueItems)
 
 
 @dataclass
@@ -65,6 +79,8 @@ class Automata:
     pila_inicial: int = 0
     finales: frozenset = frozenset()
     diferidas: list = field(default_factory=list)        # (ruta, palabra clave) que el autómata no verifica
+    fin_hilo: int | None = None                          # estado en que termina una sub-ejecución
+    pila_hilo: int | None = None                         # fondo de la pila de una sub-ejecución
 
     def estado(self, nombre):
         self.estados.append(nombre)
@@ -90,6 +106,8 @@ class Automata:
         def simbolo(s):
             if isinstance(s, str):
                 return s
+            if isinstance(s[1], frozenset):
+                return 'p:' + '|'.join(sorted(s[1]))
             nombre = '*' if s[1] is None else s[1]
             return ('*' if s[1] is None else 'k:' + s[1]) if s[0] == 'CLAVE' else f'{s[0].lower()}:{nombre}'
         prueba = lambda p: [str(x) if not isinstance(x, (int, str, bool, tuple)) else
@@ -99,12 +117,14 @@ class Automata:
             d = {'destino': t.destino}
             d.update({k: v for k, v in (('desapila', t.desapila), ('cima', t.cima), ('apila', t.apila),
                                         ('accion', list(t.accion)), ('peso', t.peso),
-                                        ('pruebas', [prueba(p) for p in t.pruebas]), ('pendientes', t.pendientes))
+                                        ('pruebas', [prueba(p) for p in t.pruebas]), ('pendientes', t.pendientes),
+                                        ('hilos', [[c, list(e)] for c, e in t.hilos]), ('recoger', t.recoger))
                       if v not in (False, None, 0, [], ())})
             return d
         return {'estados': self.estados, 'simbolos_pila': self.simbolos_pila, 'clase_pila': self.clase_pila,
                 'retorno': self.retorno, 'inicial': self.inicial, 'pila_inicial': self.pila_inicial,
                 'finales': sorted(self.finales), 'diferidas': [list(d) for d in self.diferidas],
+                'fin_hilo': self.fin_hilo, 'pila_hilo': self.pila_hilo,
                 'delta': [{simbolo(s): transicion(t) for s, t in d.items()} for d in self.delta]}
 
 
@@ -117,6 +137,8 @@ def construir(analisis: Analisis) -> Automata:
     a.delta[fin]['FIN'] = Transicion(destino=acepta)
     a.retorno[a.pila_inicial] = fin
     a.finales = frozenset([acepta])
+    a.fin_hilo = a.estado('FIN_HILO')
+    a.pila_hilo = a.simbolo('Zh', 'Z', a.fin_hilo)
 
     # estados y símbolos de pila de cada nodo
     V, DP, OI, OC, OS, AI, AE, AS, SO, SA = ({} for _ in range(10))
@@ -139,16 +161,20 @@ def construir(analisis: Analisis) -> Automata:
             if largo > 0:
                 a.retorno[SA[i, 0]] = AS[i, 1]  # no se usa: antes de volver, el símbolo ya es A.1
     a.inicial = V[nodos.raiz]
+    # cada grupo de sub-ejecuciones lleva el estado V de cada rama
+    hilos = lambda grupos: tuple((clase, tuple(None if r is None else V[r] for r in ramas)) for clase, ramas in grupos)
 
     def al_valor(n):
         """Transiciones de «leer un valor del nodo n»: token → Transicion."""
-        t = {tok: Transicion(peso=e.peso, pruebas=e.pruebas, pendientes=e.pendientes) for tok, e in n.escalar.items()}
+        t = {tok: Transicion(peso=e.peso, pruebas=e.pruebas, pendientes=e.pendientes, hilos=hilos(e.hilos))
+             for tok, e in n.escalar.items()}
         for tok, info, inicio, simbolo in (('LLAVE_ABRE', n.objeto, OI, SO), ('CORCHETE_ABRE', n.arreglo, AI, SA)):
             clave = (lambda i: i) if tok == 'LLAVE_ABRE' else (lambda i: (i, 0))
             if info.prohibido:  # una violación, y el contenedor se lee con el nodo libre
                 t[tok] = Transicion(destino=inicio[nodos.libre], apila=simbolo[clave(nodos.libre)], peso=1)
             else:
-                t[tok] = Transicion(destino=inicio[n.id], apila=simbolo[clave(n.id)], pendientes=info.pendientes)
+                t[tok] = Transicion(destino=inicio[n.id], apila=simbolo[clave(n.id)], pendientes=info.pendientes,
+                                    hilos=hilos(info.hilos), recoger=tok == 'CORCHETE_ABRE' and info.recoger)
         return t
 
     for n in nodos.lista:
@@ -158,10 +184,15 @@ def construir(analisis: Analisis) -> Automata:
 
         if not n.objeto.prohibido:
             o = n.objeto
-            claves = {('CLAVE', nombre): Transicion(destino=DP[hijo], accion=('clave', bit, o.max_props))
+            de_clave = hilos(o.hilos_clave)
+            claves = {('CLAVE', nombre): Transicion(destino=DP[hijo], accion=('clave', bit, o.max_props), hilos=de_clave)
                       for bit, (nombre, hijo) in enumerate(zip(o.nombres, o.hijos))}
-            claves['CLAVE', None] = Transicion(destino=DP[o.otra], accion=('clave', None, o.max_props))
-            cerrar = Transicion(desapila=True, accion=('cerrar_objeto', o.requeridas, o.dependencias, o.min_props))
+            claves['CLAVE', None] = Transicion(destino=DP[o.otra], accion=('clave', None, o.max_props), hilos=de_clave)
+            for patrones, hijo in o.por_patrones:  # claves no declaradas que casan con esos patrones
+                claves['CLAVE', patrones] = Transicion(destino=DP[hijo], accion=('clave', None, o.max_props),
+                                                       hilos=de_clave)
+            cerrar = Transicion(desapila=True, accion=('cerrar_objeto', o.requeridas, o.dependencias, o.min_props),
+                                pruebas=o.cierre)
             a.delta[OI[i]].update(claves, LLAVE_CIERRA=cerrar)
             a.delta[OC[i]].update(claves)
             a.delta[OS[i]].update(COMA=Transicion(destino=OC[i]), LLAVE_CIERRA=cerrar)
@@ -169,7 +200,8 @@ def construir(analisis: Analisis) -> Automata:
         if not n.arreglo.prohibido:
             r = n.arreglo
             largo = len(r.prefijo)
-            cerrar = Transicion(desapila=True, accion=('cerrar_arreglo', r.min_items))
+            cerrar = Transicion(desapila=True, accion=('cerrar_arreglo', r.min_items), pruebas=r.cierre)
+            por_elemento = hilos(r.hilos_elemento)
 
             def al_elemento(c):
                 """Leer el elemento que va en la posición c: como al_valor, pero además cuenta el
@@ -180,8 +212,10 @@ def construir(analisis: Analisis) -> Automata:
                 salida = {}
                 for tok, t in al_valor(hijo).items():
                     destino = AS[i, sig] if tok in ESCALARES else t.destino
-                    salida[tok] = Transicion(destino, False, nueva_cima, t.apila, ('elemento', r.max_items),
-                                             t.peso, t.pruebas, t.pendientes)
+                    salida[tok] = Transicion(destino=destino, cima=nueva_cima, apila=t.apila,
+                                             accion=('elemento', r.max_items), peso=t.peso, pruebas=t.pruebas,
+                                             pendientes=t.pendientes, hilos=t.hilos + por_elemento,
+                                             recoger=t.recoger)
                 return salida
 
             a.delta[AI[i]].update(al_elemento(0), CORCHETE_CIERRA=cerrar)

@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from ..automata import expresiones
 from ..semantico.clasificacion import NIVELES, Uso, nivel
 from ..semantico.simbolos import Diagnostico, Diagnosticos
 from ..sintactico.xml_dom import analizar_xml
@@ -49,8 +50,9 @@ _FACETAS_DE_RANGO = {'minInclusive': ('min', False), 'minExclusive': ('min', Tru
 class Simple:
     """Tipo simple resuelto: el tipo primitivo y las pruebas que acumulan sus restricciones."""
     base: str                 # 'string', 'integer', 'decimal' o 'boolean'
-    pruebas: tuple = ()       # ('min'|'max', Decimal, exclusivo), ('long_min'|'long_max', n), ('enum_num'|'enum_cad', valores)
-    patrones: tuple = ()      # ruta de cada faceta pattern: quedan en verificación diferida
+    pruebas: tuple = ()       # ('min'|'max', Decimal, exclusivo), ('long_min'|'long_max', n), ('enum_num'|'enum_cad', valores),
+                              # ('patron', expresiones, colapsar): el valor completo casa con alguna de las expresiones
+    patrones: tuple = ()      # ruta de cada grupo de facetas pattern que queda en verificación diferida
     nombre: str = None
 
 
@@ -529,7 +531,7 @@ class _Lector:
         return resultado or Simple('string')
 
     def _facetas(self, base, nodo, ruta) -> Simple:
-        pruebas, patrones, enumerados = list(base.pruebas), list(base.patrones), []
+        pruebas, patrones, enumerados, propios = list(base.pruebas), list(base.patrones), [], []
         numerico = base.base in ('integer', 'decimal')
         forma = ENTERO if base.base == 'integer' else DECIMAL
         for local, h, sub in self._hijos(nodo, ruta):
@@ -539,9 +541,7 @@ class _Lector:
             if valor is None:
                 self.diag.error('valor-invalido', f'la faceta «{local}» necesita un atributo value', h, sub)
             elif local == 'pattern':
-                patrones.append(sub)
-                self._uso('pattern', 'c', 'verificación diferida: el autómata no evalúa expresiones regulares', h, sub)
-                self.diag.aviso('diferida', 'pattern queda en verificación diferida: el resultado será «pendiente»', h, sub)
+                propios.append((valor, h, sub))
             elif local == 'enumeration':
                 enumerados.append((valor, h, sub))
             elif local in _FACETAS_DE_LONGITUD:
@@ -576,7 +576,42 @@ class _Lector:
                 pruebas.append(('enum_num', tuple(sorted({Decimal(v) for v in validos}))))
             else:
                 pruebas.append(('enum_cad', tuple(sorted({v for v, _, _ in enumerados}))))
+        if propios:
+            self._patrones(propios, base, pruebas, patrones)
         return Simple(base.base, tuple(pruebas), tuple(patrones))
+
+    def _patrones(self, propios, base, pruebas, patrones):
+        """Las facetas pattern de un mismo paso de restricción se combinan con «o» (XSD Parte 2, 4.3.4):
+        forman una sola prueba, un AFD anclado de la unión. Las de pasos distintos se acumulan (y)."""
+        motivo, errores = None, False
+        for valor, h, sub in propios:
+            try:
+                expresiones.analizar_xsd(valor)
+            except expresiones.ErrorDeExpresion as e:
+                self.diag.error('expresion-invalida', f'la expresión regular «{valor}» no es válida: {e}', h, sub)
+                errores = True
+            except expresiones.NoRegular as e:
+                motivo = motivo or str(e)
+        if errores:
+            return
+        textos = tuple(valor for valor, _, _ in propios)
+        if motivo is None:
+            try:
+                expresiones.de_xsd(textos)
+            except expresiones.NoRegular as e:
+                motivo = str(e)
+        _, h, sub = propios[0]
+        if motivo is None:
+            # en xs:string el valor va tal cual; en los demás tipos, sin los espacios de los lados (collapse)
+            pruebas.append(('patron', textos, base.base != 'string'))
+            for _, h2, sub2 in propios:
+                self._uso('pattern', 'c', 'AFD de la expresión regular (anclada), en la misma pasada', h2, sub2)
+        else:
+            patrones.append(sub)
+            for _, h2, sub2 in propios:
+                self._uso('pattern', 'c', f'verificación diferida: {motivo}', h2, sub2)
+            self.diag.aviso('diferida', f'pattern queda en verificación diferida ({motivo}): el resultado será '
+                                        '«pendiente»', h, sub)
 
 
 def analizar_xsd(fuente: bytes) -> AnalisisXSD:

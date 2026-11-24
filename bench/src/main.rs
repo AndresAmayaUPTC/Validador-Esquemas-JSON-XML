@@ -24,6 +24,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use validador::validador::{EJECUCIONES, HUELLAS};
 use validador::{Estado, Resultado, Validador, ValidadorXml};
 
 #[path = "../../validador/examples/dpda/cargar.rs"]
@@ -156,22 +157,24 @@ trait Motor {
 }
 
 macro_rules! motor {
-    ($tipo:ident) => {
-        impl Motor for $tipo<'_, D, W> {
+    ($tipo:ty) => {
+        impl Motor for $tipo {
             fn reiniciar(&mut self) {
-                $tipo::reiniciar(self)
+                Self::reiniciar(self)
             }
             fn feed(&mut self, bloque: &[u8]) {
-                $tipo::feed(self, bloque)
+                Self::feed(self, bloque)
             }
             fn finish(&mut self) -> Resultado {
-                $tipo::finish(self)
+                Self::finish(self)
             }
         }
     };
 }
-motor!(Validador);
-motor!(ValidadorXml);
+// Sin sub-ejecuciones ni huellas (lo que usa un esquema sin esas estrategias) y con ellas.
+motor!(Validador<'_, D, W>);
+motor!(Validador<'_, D, W, EJECUCIONES, HUELLAS, D>);
+motor!(ValidadorXml<'_, D, W>);
 
 /// Valida un documento reutilizando el validador, como haría un servidor entre petición y petición.
 fn validar(v: &mut dyn Motor, datos: &[u8], bloque: usize) -> Resultado {
@@ -242,12 +245,19 @@ fn principal() {
             bytes_fijos(),
             bytes_por_marco(automata.palabras),
         )
+    } else if tablas.hilos_o_huellas() {
+        use validador::validador::{bytes_fijos, bytes_por_nivel};
+        (
+            Box::new(Validador::<D, W, EJECUCIONES, HUELLAS, D>::new(&automata)),
+            bytes_fijos::<EJECUCIONES, HUELLAS>(),
+            bytes_por_nivel(automata.palabras, EJECUCIONES, true),
+        )
     } else {
-        use validador::validador::{bytes_fijos, bytes_por_marco};
+        use validador::validador::{bytes_fijos, bytes_por_nivel};
         (
             Box::new(Validador::<D, W>::new(&automata)),
-            bytes_fijos(),
-            bytes_por_marco(automata.palabras),
+            bytes_fijos::<1, 0>(),
+            bytes_por_nivel(automata.palabras, 1, false),
         )
     };
     let (r, m) = medir(minimo, || validar(v.as_mut(), &datos, bloque));

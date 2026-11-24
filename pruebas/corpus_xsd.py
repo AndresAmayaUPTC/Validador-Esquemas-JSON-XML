@@ -126,16 +126,35 @@ ESQUEMAS = {
   </xs:element>
   <xs:element name="nota" type="xs:string"/>'''),
 
-    # pattern: verificación diferida
-    'patron': xsd('''
+    # pattern: AFD anclado. Dos pattern del mismo paso se combinan con «o» (Codigo) y los de pasos distintos
+    # con «y» (CodigoCorto); en un entero se aplica sin los espacios de los lados; también en un atributo
+    'patron': xsd(r'''
+  <xs:simpleType name="Codigo">
+    <xs:restriction base="xs:string"><xs:pattern value="[A-Z]{2}-\d{3}"/><xs:pattern value="X+"/></xs:restriction>
+  </xs:simpleType>
+  <xs:simpleType name="CodigoCorto">
+    <xs:restriction base="Codigo"><xs:maxLength value="6"/><xs:pattern value="[^9]*"/></xs:restriction>
+  </xs:simpleType>
   <xs:element name="usuario">
     <xs:complexType>
       <xs:sequence>
         <xs:element name="correo">
-          <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="[^@]+@[^@]+"/><xs:maxLength value="40"/></xs:restriction></xs:simpleType>
+          <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="[^@\s]+@[^@\s]+"/><xs:maxLength value="40"/></xs:restriction></xs:simpleType>
         </xs:element>
-        <xs:element name="edad" type="xs:unsignedByte"/>
+        <xs:element name="edad">
+          <xs:simpleType><xs:restriction base="xs:integer"><xs:pattern value="\d{1,2}"/></xs:restriction></xs:simpleType>
+        </xs:element>
+        <xs:element name="codigo" type="CodigoCorto" minOccurs="0" maxOccurs="3"/>
       </xs:sequence>
+      <xs:attribute name="pais" use="required">
+        <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="\p{Lu}{2}"/></xs:restriction></xs:simpleType>
+      </xs:attribute>
     </xs:complexType>
+  </xs:element>'''),
+
+    # pattern que no se compila (un bloque Unicode): queda en verificación diferida
+    'patron_diferido': xsd(r'''
+  <xs:element name="nota">
+    <xs:simpleType><xs:restriction base="xs:string"><xs:pattern value="\p{IsBasicLatin}+"/><xs:maxLength value="20"/></xs:restriction></xs:simpleType>
   </xs:element>'''),
 }

@@ -3,20 +3,28 @@
   (a)  directas en el DPDA: se convierten en estados y transiciones.
   (b)  con registros acotados: necesitan una máscara de bits o un contador en el marco de pila.
   (c)  no deterministas o no libres de contexto: necesitan una estrategia de respaldo
-       (despacho por el primer token, producto de autómatas, AFD de una expresión regular o
-       verificación diferida).
+       (despacho por el primer token, producto de autómatas en la compilación o en la ejecución,
+       AFD de una expresión regular, aritmética exacta, huellas de los valores o, si nada de eso
+       sirve, verificación diferida).
 
 Además: 'anotacion' (no afecta a la validación), 'no-soportada' y 'desconocida'.
 La categoría de casi todas las palabras es fija; en unas pocas depende del uso concreto.
 """
 from dataclasses import dataclass
 
+from ..automata import expresiones, valores
+from .metaesquema import decimal
+
 A, B, C, ANOTACION, NO_SOPORTADA, DESCONOCIDA = 'a', 'b', 'c', 'anotacion', 'no-soportada', 'desconocida'
 
 _LIMITE = 'comparación decimal sobre el lexema del número'
 _CONTADOR = 'contador en el marco de pila'
 _PRODUCTO = 'producto de autómatas'
-_DESPACHO = 'despacho por el primer token; diferida si dos ramas admiten el mismo tipo'
+_DESPACHO = 'despacho por el primer token; si dos ramas admiten el mismo tipo, sub-ejecuciones en paralelo'
+_EN_PARALELO = 'producto de autómatas en la ejecución: sub-ejecuciones en paralelo'
+_SUB = 'producto de autómatas en la ejecución: una sub-ejecución por '
+_AFD = 'AFD de la expresión regular, en la misma pasada'
+_HUELLA = 'huella de 64 bits de la forma canónica del valor'
 _DIFERIDA = 'verificación diferida'
 _SIN_EFECTO = 'sin efecto en la validación'
 
@@ -43,11 +51,16 @@ CATEGORIAS = {
     # (c) con estrategia de respaldo
     # (la estrategia es la que aplica hoy el autómata de la Fase 4)
     'allOf': (C, _PRODUCTO), 'anyOf': (C, _DESPACHO), 'oneOf': (C, _DESPACHO),
-    'not': (C, _DIFERIDA), 'if': (C, _DIFERIDA), 'then': (C, _DIFERIDA), 'else': (C, _DIFERIDA),
-    'dependentSchemas': (C, _DIFERIDA), 'contains': (C, _DIFERIDA), 'minContains': (C, _DIFERIDA),
-    'maxContains': (C, _DIFERIDA), 'propertyNames': (C, _DIFERIDA),
-    'pattern': (C, _DIFERIDA), 'patternProperties': (C, _DIFERIDA),
-    'uniqueItems': (C, _DIFERIDA), 'multipleOf': (C, _DIFERIDA),
+    'not': (C, _SUB + 'valor; falla si la rama cumple'),
+    'if': (C, _SUB + 'rama (if, then, else), que se combinan al terminar el valor'),
+    'then': (C, 'rama del if'), 'else': (C, 'rama del if'),
+    'dependentSchemas': (C, _SUB + 'objeto, con «required» de condición'),
+    'contains': (C, _SUB + 'elemento; las que cumplen se cuentan en el marco del arreglo'),
+    'minContains': (C, 'contador en el marco del arreglo'), 'maxContains': (C, 'contador en el marco del arreglo'),
+    'propertyNames': (C, _SUB + 'clave, leída como cadena'),
+    'pattern': (C, _AFD), 'patternProperties': (C, 'producto del AFD de los nombres y los AFD de los patrones'),
+    'uniqueItems': (C, 'huellas de 64 bits de los elementos, en un fondo acotado'),
+    'multipleOf': (C, 'aritmética entera exacta módulo el divisor'),
     # no soportadas
     '$dynamicRef': (NO_SOPORTADA, '—'), '$dynamicAnchor': (NO_SOPORTADA, '—'),
     'unevaluatedItems': (NO_SOPORTADA, '—'), 'unevaluatedProperties': (NO_SOPORTADA, '—'),
@@ -111,12 +124,30 @@ def clasificar(tabla, tipos, grupo):
                 elif c.nombre in ('anyOf', 'oneOf') and _se_distinguen(c.valor, tipos):
                     estrategia = 'despacho determinista por el primer token'
                 elif c.nombre in ('enum', 'const') and _con_contenedores(c):
-                    # los valores escalares se comprueban; comparar objetos o arreglos completos queda diferido
-                    categoria, estrategia = C, _DIFERIDA
+                    # los escalares van al AFD; los objetos y arreglos se comparan por su huella al cerrarse
+                    categoria, estrategia = C, f'AFD de los valores escalares; {_HUELLA} para objetos y arreglos'
                 elif c.nombre == 'uniqueItems' and c.valor.dato is False:
                     categoria, estrategia = ANOTACION, _SIN_EFECTO
+                elif c.nombre in ('pattern', 'patternProperties'):
+                    textos = [c.valor.dato] if c.nombre == 'pattern' else [e.nombre for e in c.valor]
+                    motivos = [m for m in map(_no_regular, textos) if m]
+                    if motivos:
+                        estrategia = f'{_DIFERIDA}: {motivos[0]}'
+                elif c.nombre == 'multipleOf':
+                    d = decimal(c.valor)
+                    if d is not None and d > 0 and not valores.divisor_admitido(d):
+                        estrategia = f'{_DIFERIDA}: el divisor tiene más de {valores.MAX_DIGITOS_DIVISOR} dígitos'
             usos.append(Uso(c.nombre, categoria, estrategia, ruta, c.inicio, c.fin))
     return usos
+
+
+def _no_regular(texto):
+    """Por qué la expresión no se compila a un AFD, o None si se compila (o si es inválida: eso lo
+    informa el metaesquema)."""
+    try:
+        return expresiones.regular(texto)
+    except expresiones.ErrorDeExpresion:
+        return None
 
 
 def nivel(usos):

@@ -25,9 +25,11 @@ ESTADOS = ('valido', 'pendiente', 'invalido', 'malformado', 'limite')
 MOTIVOS = ('no_admitido', 'required', 'dependentRequired', 'minProperties', 'maxProperties', 'minItems', 'maxItems',
            'entero', 'min', 'max', 'long_min', 'long_max', 'enum_num', 'enum_cad',
            'xs_entero', 'xs_decimal', 'xs_booleano', 'elemento_no_permitido', 'atributo_no_declarado',
-           'atributo_requerido', 'texto_no_permitido', 'contenido_incompleto')
+           'atributo_requerido', 'texto_no_permitido', 'contenido_incompleto',
+           'patron', 'multiplo', 'enum_huella', 'unicos', 'contiene', 'anyOf', 'oneOf', 'not', 'if', 'dependentSchemas',
+           'propertyNames')
 FALLOS = ('lexico-byte', 'lexico-fin', 'lexico-largo', 'sintactico', 'clave-repetida', 'profundidad', 'tamano', 'tiempo',
-          'lexico-nombre', 'lexico-referencia', 'lexico-nombre-largo', 'atributo-repetido', 'numero-largo')
+          'lexico-nombre', 'lexico-referencia', 'lexico-nombre-largo', 'atributo-repetido', 'numero-largo', 'hilos')
 
 _CARGO = '''[package]
 name = "{nombre}"
@@ -61,7 +63,7 @@ pub use validador::{{Estado, Fallo, Motivo, Resultado}};
 pub const PROFUNDIDAD: usize = {profundidad};
 
 /// Validador de este esquema. Su tamaño es fijo: no reserva memoria al validar.
-pub type Validador = validador::{motor}<'static, PROFUNDIDAD, {{ tablas::PALABRAS }}>;
+pub type Validador = validador::{motor}<'static, PROFUNDIDAD, {{ tablas::PALABRAS }}{extra}>;
 
 /// Un validador recién iniciado.
 pub fn nuevo() -> Validador {{
@@ -99,7 +101,7 @@ pub const PDV_SIN_POSICION: u64 = u64::MAX;
 
 #[repr(C)]
 pub struct PdvResultado {{
-    /// 0 válido, 1 pendiente, 2 inválido, 3 mal formado, 4 límite de profundidad.
+    /// 0 válido, 1 pendiente, 2 inválido, 3 mal formado, 4 límite (profundidad, tamaño, tiempo o sub-ejecuciones).
     pub estado: u32,
     pub violaciones: u32,
     pub pendientes: u32,
@@ -205,6 +207,7 @@ fn codigo_de_fallo(fallo: Fallo) -> u32 {{
         Fallo::Lexico(NombreDemasiadoLargo) => 10,
         Fallo::AtributoRepetido => 11,
         Fallo::NumeroLargo => 12,
+        Fallo::Hilos => 13,
     }}
 }}
 '''
@@ -334,7 +337,11 @@ def generar_crate(compilado: Compilado, destino, nombre='validador_generado', pr
     formato = 'XSD' if tablas.xml else 'JSON'
     escribir('Cargo.toml', _CARGO.format(nombre=nombre, motor=motor, formato=formato))
     escribir('src/tablas.rs', emitir_rust(tablas, origen))
-    escribir('src/lib.rs', _LIB.format(profundidad=profundidad, formato=formato,
+    # el de JSON lleva además cuántas ejecuciones y cuántas huellas caben (0 sub-ejecuciones y 0 huellas
+    # si el esquema no las necesita: el validador ocupa lo mismo que sin estas estrategias)
+    extra = '' if tablas.xml else (', { tablas::EJECUCIONES }, { tablas::HUELLAS }, '
+                                   '{ if tablas::USA_HUELLAS { PROFUNDIDAD } else { 0 } }')
+    escribir('src/lib.rs', _LIB.format(profundidad=profundidad, formato=formato, extra=extra,
                                        motor='ValidadorXml' if tablas.xml else 'Validador'))
     enumerar = lambda prefijo, nombres, base: ', '.join(
         f'PDV_{prefijo}{n.upper().replace("-", "_")} = {base + i}' for i, n in enumerate(nombres))
