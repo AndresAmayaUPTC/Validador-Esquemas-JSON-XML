@@ -182,26 +182,84 @@ def describir(c: Compilado, con_delta=True) -> str:
     return '\n'.join(lineas)
 
 
-def a_dot(c: Compilado) -> str:
-    """Diagrama del autómata en DOT. Las aristas de retorno van punteadas, una por cada cima posible."""
+# Colores del diagrama: identidad UPTC sobre una lámina clara (negro institucional, amarillo para el estado inicial)
+_TINTA, _SUAVE, _CLARO, _AMARILLO, _PAPEL = '#1a1a1a', '#6b675d', '#a39e8f', '#ffc72c', '#faf9f4'
+
+
+def _escapar_dot(s: str) -> str:
+    return s.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _etiqueta_dot(pares) -> str:
+    """Une en una línea los símbolos con el mismo efecto («CADENA, NUMERO, NULL [w=1]») y alinea las líneas a la
+    izquierda (\\l de Graphviz)."""
+    grupos = {}
+    for simbolo, sufijo in pares:
+        grupos.setdefault(sufijo, []).append(simbolo)
+    return ''.join(_escapar_dot(', '.join(simbolos) + sufijo) + '\\l' for sufijo, simbolos in grupos.items())
+
+
+def a_dot(c: Compilado, agrupar_retornos=True) -> str:
+    """Diagrama del autómata en DOT. Las aristas de retorno van discontinuas. Con agrupar_retornos, todas llegan a
+    un único nodo «↩» del que sale una arista por cada cima de la pila (la tabla RETORNO); sin él, cada retorno se
+    dibuja hacia todos los estados a los que puede volver. Los atributos class sirven a la interfaz web."""
     a, v = c.automata, c.verificacion
-    escapar = lambda s: s.replace('\\', '\\\\').replace('"', '\\"')
-    lineas = ['digraph M {', '  rankdir=LR;', '  node [fontname="Helvetica", fontsize=10, shape=circle];',
-              '  edge [fontname="Helvetica", fontsize=8];', '  ini [shape=point];',
-              f'  ini -> q{a.inicial};']
-    lineas += [f'  q{q} [label="{escapar(n)}"{", shape=doublecircle" if q in a.finales else ""}];'
-               for q, n in enumerate(a.estados)]
+    lineas = ['digraph M {',
+              '  rankdir=LR; bgcolor="transparent"; pad=0.3; nodesep=0.32; ranksep=0.55;',
+              f'  node [fontname="Helvetica", fontsize=10, shape=circle, style=filled, fillcolor="white", '
+              f'color="{_TINTA}", fontcolor="{_TINTA}", penwidth=1.3, width=0.5, margin=0.03];',
+              f'  edge [fontname="Helvetica", fontsize=8, color="{_SUAVE}", fontcolor="#3d3a33", arrowsize=0.6];',
+              f'  ini [shape=point, width=0.09, class="inicio"];',
+              f'  ini -> q{a.inicial} [color="{_TINTA}", penwidth=1.3, class="inicio"];']
+    for q, nombre in enumerate(a.estados):
+        atributos, clases = [f'label="{_escapar_dot(nombre)}"'], ['estado']
+        if q in a.finales:
+            atributos.append('shape=doublecircle')
+            clases.append('final')
+        if q == a.inicial:
+            atributos.append(f'fillcolor="{_AMARILLO}"')
+            clases.append('inicial')
+        lineas.append(f'  q{q} [{", ".join(atributos)}, class="{" ".join(clases)}"];')
+
+    # Los retornos y las transiciones que solo suman violaciones (w > 0) no cuentan para la disposición
+    # (constraint=false): así el esqueleto del esquema —lo que se recorre con un documento válido— queda ordenado
+    # de izquierda a derecha, y los caminos de error no lo enredan.
+    retorno_dashed = f'style=dashed, color="{_CLARO}", fontcolor="{_SUAVE}", constraint=false, class="retorno"'
+    cimas_usadas = set()
     for q, transiciones in enumerate(a.delta):
-        agrupadas = {}  # (destino, estilo) → etiquetas
+        agrupadas = {}  # (destino, ¿retorno?) → [(símbolo, sufijo)]
+        con_peso = {}   # (destino, ¿retorno?) → ¿todas sus transiciones suman violaciones?
         for s, t in transiciones.items():
             (_, pila), extra = _efecto(a, t)
-            etiqueta = _simbolo(s) + ('' if pila == '—' else f' / {pila}') + (f' [{extra}]' if extra else '')
+            par = (_simbolo(s), ('' if pila == '—' else f' / {pila}') + (f' [{extra}]' if extra else ''))
             if t.destino is not RETORNO:
-                agrupadas.setdefault((t.destino, ''), []).append(etiqueta)
+                claves = [(f'q{t.destino}', False)]
             else:
                 cimas = v.cimas[q] if not t.desapila else set().union(*(v.debajo[z] for z in v.cimas[q]))
-                for destino in sorted({a.retorno[z] for z in cimas if a.retorno[z] is not None}):
-                    agrupadas.setdefault((destino, ', style=dashed'), []).append(etiqueta)
-        for (destino, estilo), etiquetas in agrupadas.items():
-            lineas.append(f'  q{q} -> q{destino} [label="{escapar(chr(10).join(etiquetas))}"{estilo}];')
+                cimas = {z for z in cimas if a.retorno[z] is not None}
+                cimas_usadas |= cimas
+                claves = ([('ret', True)] if agrupar_retornos
+                          else [(f'q{destino}', True) for destino in sorted({a.retorno[z] for z in cimas})])
+            for clave in claves:
+                agrupadas.setdefault(clave, []).append(par)
+                con_peso[clave] = con_peso.get(clave, True) and bool(t.peso)
+        for clave, pares in agrupadas.items():
+            destino, es_retorno = clave
+            if not es_retorno and con_peso[clave]:
+                # caminos de error: sin etiqueta visible (el color ya lo dice); el detalle va en el tooltip
+                detalle = _escapar_dot('\n'.join(s + sufijo for s, sufijo in pares))
+                lineas.append(f'  q{q} -> {destino} [tooltip="{detalle}", color="#d3a29d", constraint=false, '
+                              'class="violacion"];')
+                continue
+            estilo = retorno_dashed if es_retorno else 'class="avanza"'
+            lineas.append(f'  q{q} -> {destino} [label="{_etiqueta_dot(pares)}", {estilo}];')
+
+    if agrupar_retornos and cimas_usadas:
+        lineas.append(f'  ret [label="↩", shape=diamond, width=0.36, height=0.36, fixedsize=true, fontsize=12, '
+                      f'fillcolor="{_PAPEL}", color="{_SUAVE}", fontcolor="{_SUAVE}", class="punto-retorno"];')
+        por_destino = {}
+        for z in sorted(cimas_usadas):
+            por_destino.setdefault(a.retorno[z], []).append(a.simbolos_pila[z])
+        for destino, cimas in por_destino.items():
+            lineas.append(f'  ret -> q{destino} [label="{_escapar_dot("cima " + ", ".join(cimas))}", {retorno_dashed}];')
     return '\n'.join(lineas + ['}'])

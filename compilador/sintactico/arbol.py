@@ -94,17 +94,20 @@ def a_texto(raiz, datos: bytes) -> str:
 def a_dot(raiz, datos: bytes) -> str:
     """El árbol en el lenguaje DOT de Graphviz."""
     escapar = lambda s: s.replace('\\', '\\\\').replace('"', '\\"')
-    lineas = ['digraph derivacion {', '  node [fontname="Helvetica", fontsize=11, shape=plaintext];',
-              '  edge [arrowhead=none];']
+    # identidad UPTC: no terminales como texto, tokens (las hojas) en cajas sobre amarillo pálido
+    lineas = ['digraph derivacion {', '  bgcolor="transparent"; pad=0.25; nodesep=0.18; ranksep=0.32;',
+              '  node [fontname="Helvetica", fontsize=11, shape=plaintext, fontcolor="#262521", class="no-terminal"];',
+              '  edge [arrowhead=none, color="#a39e8f"];']
     pila, n = [(raiz, 0)], 1
     while pila:
         nodo, i = pila.pop()
         if nodo.token is not None:
-            lineas.append(f'  n{i} [label="{escapar(nodo.simbolo)}\\n{escapar(_lexema(nodo, datos))}", shape=box];')
+            lineas.append(f'  n{i} [label="{escapar(nodo.simbolo)}\\n{escapar(_lexema(nodo, datos))}", shape=box, '
+                          'style=filled, fillcolor="#fff4d1", color="#1a1a1a", fontsize=10, class="token"];')
             continue
         lineas.append(f'  n{i} [label="{escapar(nodo.simbolo)}"];')
         if not nodo.hijos:
-            lineas.append(f'  n{n} [label="{EPSILON}"];  n{i} -> n{n};')
+            lineas.append(f'  n{n} [label="{EPSILON}", fontcolor="#a39e8f", class="epsilon"];  n{i} -> n{n};')
             n += 1
         hijos = list(zip(nodo.hijos, range(n, n + len(nodo.hijos))))
         n += len(hijos)

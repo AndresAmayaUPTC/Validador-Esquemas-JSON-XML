@@ -183,6 +183,7 @@ def compilar_esquema(texto: str) -> dict:
             'diferidas': [{'ruta': ruta, 'palabra': palabra} for ruta, palabra in a.diferidas],
             'descripcion': describir(c, con_delta=False),
             'dot': a_dot(c) if len(a.estados) <= MAX_ESTADOS_DIBUJO else None,
+            'dot_detallado': a_dot(c, agrupar_retornos=False) if len(a.estados) <= MAX_ESTADOS_DIBUJO else None,
             'delta': filas_delta(c, MAX_FILAS_DELTA),
             'delta_truncada': c.tamano['transiciones'] > MAX_FILAS_DELTA,
             'bytes_de_tablas': tablas.bytes_de_tabla(), 'palabras_de_mascara': tablas.palabras,
