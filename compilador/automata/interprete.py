@@ -280,7 +280,8 @@ class Validador:
             antes = self._estado
             self._token(token)
             if self.recorrido is not None and (not self._terminado or self._r.estado == 'invalido'):
-                self.recorrido.append((antes, self._estado))   # la transición ocurrió (no la cortó un error)
+                # la transición ocurrió (no la cortó un error): estados, el token que la provocó y la pila después
+                self.recorrido.append((antes, self._estado, token, [m.simbolo for m in self._pila]))
         if error is not None:
             self._detener('malformado', error.pos, 'léxico: ' + str(error))
 

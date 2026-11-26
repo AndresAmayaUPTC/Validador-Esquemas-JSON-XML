@@ -581,23 +581,49 @@ function conectar(ruta) {
   });
 }
 
-function pintarMaquina(p, bytes) {
-  const decodificar = (trozo) => new TextDecoder().decode(trozo);
-  const desde = Math.max(0, p.bytes - 160);
-  const cabeza = p.bytes < bytes.length ? decodificar(bytes.subarray(p.bytes, Math.min(bytes.length, p.bytes + 4))).slice(0, 1) : '';
-  const resto = p.bytes < bytes.length ? decodificar(bytes.subarray(p.bytes, Math.min(bytes.length, p.bytes + 260))).slice(cabeza.length) : '';
-  $('cinta').innerHTML = `${desde ? '…' : ''}<span class="leido">${html(decodificar(bytes.subarray(desde, p.bytes)))}</span>` +
-    `<span class="cabeza">${html(cabeza || '⊣')}</span>${html(resto)}${p.bytes + 260 < bytes.length ? '…' : ''}`;
+const decodificar = (trozo) => new TextDecoder().decode(trozo);
+
+/**
+ * La cinta de entrada. Sin token, la cabeza está en el byte «posicion»; con un token [inicio, fin) se resalta
+ * entero (es lo que lee la transición que se está mostrando) y lo anterior queda como leído.
+ */
+function pintarCinta(bytes, posicion, token = null) {
+  const inicio = token ? token.inicio : posicion;
+  const fin = token ? Math.max(token.fin, token.inicio) : posicion;
+  const desde = Math.max(0, inicio - 160);
+  let marca, resto;
+  if (token && fin > inicio) {
+    marca = `<span class="token">${html(decodificar(bytes.subarray(inicio, fin)))}</span>`;
+    resto = fin < bytes.length ? decodificar(bytes.subarray(fin, Math.min(bytes.length, fin + 260))) : '';
+  } else {
+    const cabeza = inicio < bytes.length ? decodificar(bytes.subarray(inicio, Math.min(bytes.length, inicio + 4))).slice(0, 1) : '';
+    marca = `<span class="${token ? 'token' : 'cabeza'}">${html(cabeza || '⊣')}</span>`;
+    resto = inicio < bytes.length ? decodificar(bytes.subarray(inicio, Math.min(bytes.length, inicio + 260))).slice(cabeza.length) : '';
+  }
+  $('cinta').innerHTML = `${desde ? '…' : ''}<span class="leido">${html(decodificar(bytes.subarray(desde, inicio)))}</span>` +
+    `${marca}${html(resto)}${fin + 260 < bytes.length ? '…' : ''}`;
+}
+
+/** La pila, con la cima arriba. tramos: el nombre de la propiedad o elemento de cada marco, si se conoce. */
+function pintarPila(simbolos, tramos = []) {
+  const marcos = simbolos.map((simbolo, i) => ({ simbolo, tramo: i === 0 ? '' : tramos[i - 1] ?? '' })).reverse();
+  const visibles = marcos.slice(0, 11);
+  $('pila').innerHTML = visibles.map((m) => `<li class="${m.simbolo === 'Z0' ? 'fondo' : ''}">
+      <span class="simbolo">${html(m.simbolo)}</span><span class="tramo">${html(m.tramo)}</span></li>`).join('') +
+    (marcos.length > visibles.length ? `<li class="mas">… ${marcos.length - visibles.length} más</li>` : '');
+}
+
+function pintarContadores(p, bytes) {
   $('contadores').innerHTML = [
     ['Leído', `${numero(p.bytes)} de ${numero(bytes.length)} bytes`], ['Estado', p.estado_del_automata],
     ['Violaciones', numero(p.violaciones)], ['Profundidad', `${p.profundidad} (máxima ${p.profundidad_maxima})`],
   ].map(([k, v]) => `<div><dt>${k}</dt><dd>${html(v)}</dd></div>`).join('');
-  const tramos = p.ruta.split('/').slice(1);
-  const marcos = p.pila.map((simbolo, i) => ({ simbolo, tramo: i === 0 ? '' : tramos[i - 1] ?? '' })).reverse();
-  const visibles = marcos.slice(0, 11);
-  $('pila').innerHTML = visibles.map((m, i) => `<li class="${m.simbolo === 'Z0' ? 'fondo' : ''}">
-      <span class="simbolo">${html(m.simbolo)}</span><span class="tramo">${html(m.tramo)}</span></li>`).join('') +
-    (marcos.length > visibles.length ? `<li class="mas">… ${marcos.length - visibles.length} más</li>` : '');
+}
+
+function pintarMaquina(p, bytes) {
+  pintarCinta(bytes, p.bytes);
+  pintarContadores(p, bytes);
+  pintarPila(p.pila, p.ruta.split('/').slice(1));
 }
 
 /**
@@ -618,23 +644,124 @@ async function prepararRecorrido() {
   return estado.recorrido.control;
 }
 
+// ---- ritmo del recorrido: por bloques (rápido) o una transición cada vez, con pausa o paso a paso ----
+const ritmo = {
+  pausado: false,
+  saltar: false,       // se pulsó Siguiente: la transición que espera sale ya
+  cancelado: false,
+  despertar: null,     // hace que la espera en curso vuelva a mirar las condiciones
+  pasos: 0,            // transiciones mostradas en esta validación
+  lento: () => $('ritmo').value !== 'bloque',
+  manual: () => $('ritmo').value === 'manual',
+  avisar() { this.despertar?.(); },
+};
+
 /**
- * Lleva el diagrama por las transiciones que trae un mensaje del servidor ([desde, hacia] cada una). Si un bloque
- * provocó varias, se ven una tras otra, repartiendo la pausa entre ellas (como mucho 150 ms cada una).
+ * Espera el turno de la siguiente transición. Sale cuando pasa el tiempo elegido (contado desde que se mostró
+ * la transición actual, así una pausa no lo reinicia), con Siguiente, al pasar a «por bloques» o al detener.
+ * Cada botón solo despierta la espera, que vuelve a mirar el estado: no hay temporizadores sueltos.
  */
-async function recorrer(recorrido, mensaje, pausa) {
+async function esperarTurno() {
+  const inicio = performance.now();
+  ritmo.saltar = false;
+  for (;;) {
+    if (ritmo.cancelado || !ritmo.lento() || ritmo.saltar) break;
+    const automatico = !ritmo.manual() && !ritmo.pausado;
+    const resta = Number($('ritmo').value) - (performance.now() - inicio);
+    if (automatico && resta <= 0) break;
+    let reloj = null;
+    await new Promise((despertar) => {
+      ritmo.despertar = despertar;
+      if (automatico) reloj = setTimeout(despertar, resta);
+    });
+    clearTimeout(reloj);
+    ritmo.despertar = null;
+  }
+  ritmo.saltar = false;
+}
+
+function actualizarBotonesDePaso() {
+  const enCurso = !!cancelarStreaming;
+  $('pausar').hidden = !enCurso || ritmo.manual() || !ritmo.lento();
+  $('pausar').textContent = ritmo.pausado ? 'Continuar' : 'Pausar';
+  $('siguiente').hidden = !enCurso || !ritmo.lento();
+  $('siguiente').disabled = !(ritmo.manual() || ritmo.pausado);
+}
+
+const siguientePaso = () => { ritmo.saltar = true; ritmo.avisar(); };
+$('pausar').addEventListener('click', () => {
+  ritmo.pausado = !ritmo.pausado;
+  actualizarBotonesDePaso();
+  ritmo.avisar();
+});
+$('siguiente').addEventListener('click', siguientePaso);
+$('ritmo').addEventListener('change', () => {
+  // cambiar el ritmo a mitad de una validación vale enseguida (por ejemplo, «por bloques» para terminar rápido)
+  if (!ritmo.manual()) ritmo.pausado = false;
+  actualizarBotonesDePaso();
+  ritmo.avisar();
+});
+document.addEventListener('keydown', (e) => {
+  const escribiendo = ['TEXTAREA', 'INPUT', 'SELECT'].includes(document.activeElement?.tagName);
+  if (e.key === 'ArrowRight' && !escribiendo && !$('siguiente').hidden && !$('siguiente').disabled) {
+    e.preventDefault();
+    siguientePaso();
+  }
+});
+
+const textoDelToken = (bytes, d) => {
+  if (d.token === 'FIN') return '⊣ (fin del documento)';
+  const texto = decodificar(bytes.subarray(d.inicio, d.fin)).replace(/\s+/g, ' ');
+  return texto.length > 48 ? `${texto.slice(0, 47)}…` : texto;
+};
+
+/** Muestra una transición: rótulo, token resaltado en la cinta, pila que deja e historial. */
+function pintarPaso(bytes, desde, hacia, d) {
+  ritmo.pasos += 1;
+  const token = d ? textoDelToken(bytes, d) : '';
+  const movimiento = desde === hacia
+    ? `se queda en <span class="estado-dpda">${html(hacia)}</span>`
+    : `<span class="estado-dpda">${html(desde)}</span><span class="flecha">→</span><span class="estado-dpda">${html(hacia)}</span>`;
+  $('paso-actual').innerHTML = `<b>Paso ${numero(ritmo.pasos)}.</b> ` +
+    (d ? `Lee <code>${html(token)}</code> <span class="tipo-token">${html(d.token)}${d.token === 'FIN' ? '' : `, bytes ${d.inicio}–${d.fin}`}</span> y ` : '') +
+    `${movimiento}${d ? ` · pila: ${d.pila.length - 1 ? html(d.pila.slice(1).join(' · ')) + ' (cima a la derecha)' : 'solo Z0'}` : ''}`;
+  $('historial').insertAdjacentHTML('afterbegin', `<li>${numero(ritmo.pasos)}. ${html(desde)} → ${html(hacia)}${d ? `  con ${html(token)}` : ''}</li>`);
+  while ($('historial').children.length > 30) $('historial').lastElementChild.remove();
+  if (!d) return;
+  pintarCinta(bytes, d.inicio, d);
+  pintarPila(d.pila);
+  const estadoActual = $('contadores').querySelectorAll('dd')[1];
+  if (estadoActual) estadoActual.textContent = hacia;
+}
+
+/**
+ * Lleva el diagrama por las transiciones que trae un mensaje del servidor ([desde, hacia] cada una, y en
+ * «detalles» el token y la pila de cada una). Por bloques, si un bloque provocó varias se ven una tras otra
+ * repartiendo la pausa (como mucho 150 ms cada una). Con un ritmo lento, cada una espera su turno.
+ */
+async function recorrer(recorrido, mensaje, pausa, bytes) {
   if (!recorrido) return;
   const pasos = mensaje.pasos;
   if (!pasos) return recorrido.marcar(mensaje.estado_del_automata);   // un servidor sin la lista de pasos
-  for (let i = 0; i < pasos.length; i++) {
+  for (let i = 0; i < pasos.length && !ritmo.cancelado; i++) {
+    // con un ritmo lento cada transición espera su turno antes de verse: en paso a paso se empieza viendo el
+    // estado inicial, y la primera transición llega con el primer «Siguiente»
+    if (ritmo.lento()) await esperarTurno();
+    if (ritmo.cancelado) break;
     recorrido.marcar(pasos[i][1], pasos[i][0]);
-    if (i < pasos.length - 1 && pausa) await esperar(Math.min(150, pausa / pasos.length));
+    if (ritmo.lento()) {
+      pintarPaso(bytes, pasos[i][0], pasos[i][1], mensaje.detalles?.[i]);
+    } else {
+      ritmo.pasos += 1;
+      if (i < pasos.length - 1 && pausa) await esperar(Math.min(150, pausa / pasos.length));
+    }
   }
 }
 
 let cancelarStreaming = null;
 async function validarPorBloques() {
   if (cancelarStreaming) return cancelarStreaming();
+  Object.assign(ritmo, { pausado: false, saltar: false, cancelado: false, pasos: 0 });
   abrir('validacion');
   const bytes = bytesDelDocumento();
   const tamano = Number($('bloque').value);
@@ -646,8 +773,9 @@ async function validarPorBloques() {
   } catch (e) {
     return aviso('aviso-documento', `${e.message[0].toUpperCase()}${e.message.slice(1)}.`, true);
   }
-  cancelarStreaming = () => { cancelado = true; };
+  cancelarStreaming = () => { cancelado = true; ritmo.cancelado = true; ritmo.avisar(); };
   $('streaming').textContent = 'Detener';
+  actualizarBotonesDePaso();
   try {
     canal.ws.send(JSON.stringify({ tipo: 'inicio', esquema: $('esquema').value, fallo_temprano: $('temprano').checked }));
     const listo = await canal.siguiente();
@@ -660,6 +788,11 @@ async function validarPorBloques() {
     pintarMaquina({ bytes: 0, violaciones: 0, profundidad: 0, profundidad_maxima: 0, estado_del_automata: '—', ruta: '', pila: ['Z0'] }, bytes);
     const recorrido = await prepararRecorrido();
     recorrido?.marcar(null);   // empieza en el estado inicial
+    $('paso').hidden = !recorrido;
+    $('historial').innerHTML = '';
+    $('paso-actual').innerHTML = ritmo.lento()
+      ? `En el estado inicial, antes de leer nada. ${ritmo.manual() ? 'Pulsa <b>Siguiente paso</b> (o la flecha derecha).' : ''}`
+      : 'Por bloques: elige un recorrido lento o paso a paso para ver cada transición con su token.';
     let ultimo = null;   // el último progreso: al cerrar se repinta con el estado al que llevan los pasos finales
     for (let i = 0; i < bytes.length && !cancelado; i += tamano) {
       canal.ws.send(bytes.subarray(i, i + tamano));
@@ -667,21 +800,26 @@ async function validarPorBloques() {
       if (p.tipo !== 'progreso') return aviso('aviso-documento', p.mensaje ?? 'El servidor cerró la conexión.', true);
       ultimo = p;
       pintarMaquina(p, bytes);
-      await recorrer(recorrido, p, pausa);
+      await recorrer(recorrido, p, pausa, bytes);
       for (const v of p.nuevas) {
         $('en-vivo').insertAdjacentHTML('beforeend', `<li><span class="donde">${enlaceA('documento', v, `byte ${v.byte}`)}</span>${html(v.mensaje)}</li>`);
       }
       aviso('aviso-documento', `Leyendo… ${numero(p.bytes)} de ${numero(bytes.length)} bytes.`);
       if (p.terminado) break;
-      if (pausa) await esperar(pausa);
+      if (pausa && !ritmo.lento()) await esperar(pausa);   // con un ritmo lento manda la pausa de cada transición
     }
     if (cancelado) return aviso('aviso-documento', 'Validación detenida.');
     canal.ws.send(JSON.stringify({ tipo: 'fin' }));
     const final = await canal.siguiente();
     if (final.tipo === 'resultado') {
-      await recorrer(recorrido, final, pausa);   // lo que solo se decide al cerrar: el último token y FIN → ACEPTA
+      await recorrer(recorrido, final, pausa, bytes);   // lo que solo se decide al cerrar: el último token y FIN → ACEPTA
+      if (cancelado) return aviso('aviso-documento', 'Validación detenida.');
       // el contador «Estado» también: sin esto seguiría en el estado del último bloque (por ejemplo V1 con «3.8»)
       if (ultimo && final.pasos?.length) pintarMaquina({ ...ultimo, estado_del_automata: final.pasos.at(-1)[1] }, bytes);
+      if (recorrido) {
+        $('paso-actual').innerHTML = (ritmo.lento() ? $('paso-actual').innerHTML + ' ' : '') +
+          `<b>Fin: ${html(ESTADOS[final.estado])}</b> tras ${numero(ritmo.pasos)} transiciones.`;
+      }
       pintarVeredicto(final);
       aviso('aviso-documento', `${ESTADOS[final.estado]}: ${textoDeVeredicto(final)}.`, !['valido', 'pendiente'].includes(final.estado));
     }
@@ -689,6 +827,7 @@ async function validarPorBloques() {
     canal.ws.close();
     cancelarStreaming = null;
     $('streaming').textContent = 'Validar por bloques';
+    actualizarBotonesDePaso();
   }
 }
 
@@ -1007,6 +1146,94 @@ $('guardar').addEventListener('submit', async (e) => {
   if (!r.ok) return aviso('aviso-documento', motivoDe(r), true);
   $('nombre-caso').value = '';
   listarCasos();
+});
+
+// =====================================================================
+// Conversión de esquemas, inferencia y conversión de documentos
+// =====================================================================
+const NOMBRES_DE_FORMATO = { json: 'JSON Schema', xsd: 'XSD', xml: 'XML' };
+
+/** Los documentos de ejemplo: el del editor y los del cuadro de abajo, separados por una línea con ---. */
+function documentosDeEjemplo() {
+  const extra = $('ejemplos-extra').value.split(/^\s*---\s*$/m).map((d) => d.trim()).filter(Boolean);
+  return [$('documento').value, ...extra].filter((d) => d.trim());
+}
+
+function pintarConversion(titulo, explicacion, d, usarComo) {
+  const avisos = d.avisos.length
+    ? `<ul class="lista">${d.avisos.map((a) => `<li><span class="severidad-aviso">aviso</span>
+        <span class="donde">${html(a.ruta)}</span>${html(a.mensaje)}</li>`).join('')}</ul>`
+    : '<p class="vacio">Sin avisos: la conversión es exacta.</p>';
+  $('conversion').innerHTML = `<h3>${html(titulo)}</h3><p class="vacio">${explicacion}</p>
+    <div class="controles"><button class="principal" data-usar="${usarComo}">Usar como ${usarComo}</button>
+    <button data-copiar>Copiar</button></div>
+    <h3>Avisos (${d.avisos.length})</h3>${avisos}
+    <h3>Resultado</h3><pre class="formal resultado">${html(d.texto)}</pre>`;
+  estado.conversion = d.texto;
+}
+
+async function convertirCon(boton, ruta, cuerpo, pintar) {
+  $(boton).disabled = true;
+  $('conversion').innerHTML = '<p class="vacio">Convirtiendo…</p>';
+  try {
+    const r = await api(ruta, cuerpo);
+    if (!r.ok) {
+      const errores = r.datos?.errores ?? [];
+      $('conversion').innerHTML = `<p>${html(motivoDe(r))}</p>` +
+        (errores.length ? `<ul class="lista">${errores.map((e) => `<li>${html(e)}</li>`).join('')}</ul>` : '');
+      return;
+    }
+    pintar(r.datos);
+  } catch (e) {
+    $('conversion').innerHTML = `<p>No se pudo contactar con el servidor: ${html(e.message)}</p>`;
+  } finally {
+    $(boton).disabled = false;
+  }
+}
+
+$('convertir-esquema').addEventListener('click', () => convertirCon('convertir-esquema', '/api/convertir',
+  { esquema: $('esquema').value }, (d) => pintarConversion(
+    `${NOMBRES_DE_FORMATO[d.origen]} → ${NOMBRES_DE_FORMATO[d.formato]}`,
+    'El esquema convertido está dentro del subconjunto que acepta el compilador: se puede usar y compilar enseguida.',
+    d, 'esquema')));
+
+$('inferir').addEventListener('click', () => {
+  const documentos = documentosDeEjemplo();
+  if (!documentos.length) {
+    $('conversion').innerHTML = '<p>Escribe al menos un documento de ejemplo.</p>';
+    return;
+  }
+  convertirCon('inferir', '/api/inferir', { documentos }, (d) => pintarConversion(
+    `${NOMBRES_DE_FORMATO[d.formato]} inferido de ${documentos.length} ${documentos.length === 1 ? 'ejemplo' : 'ejemplos'}`,
+    d.formato === 'json' ? 'Inferido con la biblioteca GenSON: required son las claves presentes en todos los ejemplos.'
+      : 'Cada elemento tiene un tipo anónimo; minOccurs y maxOccurs salen de las veces que aparece en los ejemplos.',
+    d, 'esquema'));
+});
+
+$('convertir-documento').addEventListener('click', () => convertirCon('convertir-documento', '/api/convertir-documento',
+  { esquema: $('esquema').value, documento: $('documento').value }, (d) => pintarConversion(
+    `Documento ${d.origen.toUpperCase()} → ${d.formato.toUpperCase()}`,
+    'Los tipos de los valores y qué hijos se repiten salen del esquema. Para validar el resultado, usa también el '
+      + 'esquema convertido.',
+    d, 'documento')));
+
+$('conversion').addEventListener('click', async (e) => {
+  const b = e.target.closest('button');
+  if (!b || estado.conversion === undefined) return;
+  if (b.dataset.copiar !== undefined) {
+    await navigator.clipboard?.writeText(estado.conversion);
+    b.textContent = 'Copiado';
+    return;
+  }
+  if (b.dataset.usar === 'esquema') {
+    $('esquema').value = estado.conversion;
+    $('ejemplos').value = '';
+    await compilar();
+    abrir('analisis');
+  } else if (b.dataset.usar === 'documento') {
+    ponerDocumento(codificar(estado.conversion));
+    aviso('aviso-documento', 'Documento convertido. Para validarlo, el esquema también debe estar en su formato.');
+  }
 });
 
 // =====================================================================

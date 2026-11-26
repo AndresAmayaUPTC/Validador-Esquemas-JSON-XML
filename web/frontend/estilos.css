@@ -78,11 +78,8 @@ i { font-family: var(--serif); }
   padding: 12px 22px 12px; border-bottom: 1px solid var(--regla); background: var(--papel);
 }
 .cabecera h1 { display: flex; align-items: center; gap: 12px; font-size: 1.12rem; letter-spacing: -0.015em; min-width: 0; }
-.sello {
-  flex: none; width: 30px; height: 30px; display: grid; place-items: center;
-  background: var(--negro); color: var(--amarillo);
-  font-family: var(--mono); font-size: 0.7rem; font-weight: 700; letter-spacing: 0;
-}
+/* logo.svg: un autómata de pila en miniatura (estado inicial sobre su pila), en negro y amarillo institucionales */
+.sello { flex: none; display: block; width: 30px; height: 30px; }
 @media (prefers-color-scheme: dark) { .sello { outline: 1px solid var(--regla); } }
 .definicion { grid-column: 1; margin: 0; padding-left: 42px; font-family: var(--serif); font-size: 1.3rem; }
 .definicion sub { font-size: 0.65em; }
@@ -253,6 +250,21 @@ ul.lista li { padding: 6px 0; border-bottom: 1px solid var(--regla); }
 .recorrido { margin: 0 0 18px; }
 .recorrido .nota-recorrido { margin: 0 0 8px; max-width: 72ch; font-size: 0.82rem; color: var(--tinta-suave); }
 .recorrido .lamina { max-height: 46vh; }
+/* recorrido lento: qué transición se está viendo, con su token, y las anteriores */
+.paso { margin: 0 0 10px; padding: 10px 12px; background: var(--superficie); border: 1px solid var(--regla);
+  border-left: 4px solid var(--resalte); }
+.paso-barra { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.paso-actual { flex: 1 1 28em; margin: 0; font-size: 0.92rem; line-height: 1.5; }
+.paso-actual .estado-dpda { font-family: var(--mono); font-weight: 700; }
+.paso-actual .flecha { color: #b58500; font-weight: 700; margin: 0 4px; }
+.paso-actual code { background: var(--resalte); color: var(--sobre-resalte); padding: 0 4px; }
+.paso-actual .tipo-token { font-family: var(--mono); font-size: 0.82em; color: var(--tinta-suave); }
+.historial { list-style: none; margin: 8px 0 0; padding: 0; font-family: var(--mono); font-size: 0.78rem;
+  color: var(--tinta-suave); max-height: 7.5em; overflow: auto; }
+.historial li { padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.historial li:first-child { color: var(--tinta); }
+.cinta .token { background: var(--resalte); color: var(--sobre-resalte); font-weight: 700; padding: 1px 0;
+  outline: 2px solid var(--resalte); }
 
 .leyenda-diagrama { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 8px 0 4px;
   font-size: 0.8rem; color: var(--tinta-suave); }
@@ -306,6 +318,12 @@ tr.grupo td { padding-top: 16px; font-size: 0.74rem; font-weight: 700; letter-sp
 .acciones { white-space: nowrap; }
 .acciones button { padding: 2px 8px; font-size: 0.8rem; }
 .metricas { color: var(--tinta-suave); font-size: 0.8rem; }
+
+/* ---- conversión ---- */
+.mas-ejemplos { margin: 0 0 14px; font-size: 0.88rem; }
+.mas-ejemplos summary { cursor: pointer; color: var(--tinta-suave); }
+.mas-ejemplos textarea { display: block; height: 160px; margin-top: 8px; }
+pre.formal.resultado { max-height: 60vh; overflow: auto; white-space: pre; }
 
 @media (max-width: 1200px) {
   .mesa { grid-template-columns: minmax(0, 45fr) minmax(0, 55fr); }

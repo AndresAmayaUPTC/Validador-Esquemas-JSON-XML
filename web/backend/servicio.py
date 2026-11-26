@@ -8,13 +8,21 @@ valida con el autómata. Los tamaños están acotados para que una petición no 
 """
 import base64
 import io
+import json
 import tempfile
 import zipfile
 from collections import Counter
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 
 from compilador import formatos
+from compilador.conversion import ErrorDeConversion
+from compilador.conversion.documentos import a_texto_json, json_a_xml, xml_a_json
+from compilador.conversion.inferir_json import inferir_json
+from compilador.conversion.inferir_xsd import inferir_xsd
+from compilador.conversion.json_a_xsd import json_a_xsd
+from compilador.conversion.xsd_a_json import leer_xsd, xsd_a_json
 from compilador.automata.compilar import Compilado, ErrorDeEsquema, a_dot, describir, filas_delta
 from compilador.automata.interprete import Resultado
 from compilador.generador.rust import generar_crate
@@ -268,3 +276,70 @@ def crate_en_zip(texto_esquema: str, nombre='validador_generado') -> bytes:
                 if archivo.is_file():
                     z.write(archivo, f'{nombre}/{archivo.relative_to(raiz).as_posix()}')
         return memoria.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Conversión de esquemas e inferencia (compilador/conversion)
+# ---------------------------------------------------------------------------
+MAX_EJEMPLOS = 50
+
+
+def _conversion_a_dict(c, origen: str) -> dict:
+    return {'ok': True, 'origen': origen, 'formato': c.formato, 'texto': c.texto,
+            'avisos': [{'ruta': a.ruta, 'mensaje': a.mensaje} for a in c.avisos]}
+
+
+def _error_de_conversion(e):
+    return EntradaInvalida(str(e), 422, errores=e.errores)
+
+
+def inferir_esquema(documentos: list) -> dict:
+    """Esquema inferido a partir de documentos de ejemplo, todos JSON o todos XML."""
+    if not 1 <= len(documentos) <= MAX_EJEMPLOS:
+        raise EntradaInvalida(f'envía entre 1 y {MAX_EJEMPLOS} documentos de ejemplo', 400)
+    datos = [_a_bytes(d, MAX_PAYLOAD, f'el ejemplo {i}') for i, d in enumerate(documentos, 1)]
+    xml = {formatos.es_xml(d) for d in datos}
+    if len(xml) > 1:
+        raise EntradaInvalida('los ejemplos deben ser todos JSON o todos XML', 400)
+    try:
+        if xml == {True}:
+            return _conversion_a_dict(inferir_xsd(datos), 'xml')
+        return _conversion_a_dict(inferir_json(datos), 'json')
+    except ErrorDeConversion as e:
+        raise _error_de_conversion(e)
+
+
+def convertir_esquema(texto: str) -> dict:
+    """XSD → JSON Schema o JSON Schema → XSD, según el formato del esquema."""
+    fuente = _a_bytes(texto, MAX_ESQUEMA, 'el esquema')
+    try:
+        if formatos.es_xml(fuente):
+            return _conversion_a_dict(xsd_a_json(fuente), 'xsd')
+        return _conversion_a_dict(json_a_xsd(fuente), 'json')
+    except ErrorDeConversion as e:
+        raise _error_de_conversion(e)
+
+
+def convertir_documento(texto_esquema: str, texto_documento: str) -> dict:
+    """Un documento XML a JSON o al revés, con la convención de los convertidores. El esquema dice los tipos
+    y qué hijos se repiten; si es un JSON Schema, se usa su conversión a XSD."""
+    fuente = _a_bytes(texto_esquema, MAX_ESQUEMA, 'el esquema')
+    datos = _a_bytes(texto_documento, MAX_PAYLOAD, 'el documento')
+    avisos = []
+    try:
+        if formatos.es_xml(fuente):
+            analisis = leer_xsd(fuente)
+        else:
+            conversion = json_a_xsd(fuente)
+            avisos = [{'ruta': a.ruta, 'mensaje': a.mensaje} for a in conversion.avisos]
+            analisis = leer_xsd(conversion.texto.encode('utf-8'))
+        if formatos.es_xml(datos):
+            return {'ok': True, 'origen': 'xml', 'formato': 'json', 'avisos': avisos,
+                    'texto': a_texto_json(xml_a_json(datos, analisis))}
+        try:
+            valor = json.loads(datos.decode('utf-8-sig'), parse_float=Decimal)
+        except (ValueError, UnicodeDecodeError) as e:
+            raise EntradaInvalida(f'el documento no es JSON válido: {e}', 422)
+        return {'ok': True, 'origen': 'json', 'formato': 'xml', 'avisos': avisos, 'texto': json_a_xml(valor, analisis)}
+    except ErrorDeConversion as e:
+        raise _error_de_conversion(e)

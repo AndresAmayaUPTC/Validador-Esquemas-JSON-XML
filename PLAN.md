@@ -6,7 +6,7 @@ Compilador (esquema → DPDA ponderado) en **Python**. Validadores en **Rust**. 
 
 ```
 Código/
-├─ compilador/   paquete Python: lexico, sintactico, semantico, automata, generador
+├─ compilador/   paquete Python: lexico, sintactico, semantico, automata, generador, xsd, conversion
 ├─ validador/    crate de Rust: motor fijo (lexer + DPDA) y tablas generadas
 ├─ pruebas/      casos: esquema, payload y resultado esperado
 └─ web/          backend y frontend (Fase 7)
@@ -120,6 +120,9 @@ En Windows, las dependencias de la línea base necesitan `dlltool`; `correr.py` 
 - [x] Backend en Python (REST + WebSocket) que usa el compilador directamente (`web/backend/`)
 - [x] Frontend: editor de esquema, autómata, árbol de derivación, panel de comparación (`web/frontend/`, sin paso de compilación)
 - [x] Sandbox: el validador nativo se compila a WebAssembly y se ejecuta en el navegador; el servidor solo ejecuta tablas de datos
+- [x] Recorrido lento de la validación por bloques (pestaña Validación, «Recorrido»): 0,5, 1 o 2 s por transición, o paso a
+  paso con «Siguiente» (o la flecha derecha), con pausa. Cada transición muestra el token que la provoca, resaltado en la
+  cinta, y la pila que deja: el WebSocket envía «detalles» (token, posición y pila) en paralelo a «pasos»
 - [x] Base de datos NoSQL con los casos de prueba: MongoDB si existe `MONGODB_URI`, archivos locales si no (`web/backend/repositorio.py`)
 - [x] MongoDB Atlas conectado: los 26 casos están en la base `validador`, colección `casos`, con el resultado y las métricas de su última ejecución (la cadena de conexión no se guarda en el repositorio: va en `MONGODB_URI`)
 - [ ] Desplegar en la nube: los archivos están listos (`Dockerfile`, `docker-compose.yml`), falta ejecutarlo con una cuenta de AWS o Azure
@@ -264,3 +267,47 @@ y `xs:boolean`, sin los espacios de los lados (el motor no le pasa al AFD los by
 falla la forma léxica, que va antes). Solo quedan diferidos los bloques Unicode (`\p{IsBasicLatin}`).
 Diferencias conocidas con el oráculo (`elementpath`): fuera de una clase deja `\w` y `\s` a `re` de Python (`_` cuenta
 en `\w`) y en `\i`/`\c` no incluye el plano astral; aquí se sigue la especificación.
+
+### 10. Conversión de esquemas e inferencia
+
+Paquete `compilador/conversion/`. Todo lo que sale está dentro del subconjunto que compila el compilador; lo que el otro
+lenguaje no puede expresar no se calla: queda en los **avisos** de la conversión, con la ruta donde estaba.
+
+| Conversión | Cómo | Módulo |
+|---|---|---|
+| JSON → JSON Schema | Biblioteca **GenSON** (`genson`): fusiona varios ejemplos; `required` = claves presentes en todos | `inferir_json.py` |
+| XML → XSD | A mano. Un tipo anónimo por ruta de elemento. Si los hijos siguen un orden común en todos los ejemplos (cada nombre en un solo tramo, orden topológico sin ciclos), `sequence` con `minOccurs`/`maxOccurs` vistos; si no, `choice` repetido. Texto: `xs:boolean` ⊂ `xs:integer` ⊂ `xs:decimal` ⊂ `xs:string` | `inferir_xsd.py` |
+| XSD → JSON Schema | A mano, sobre el modelo ya resuelto de `compilador/xsd/modelo.py`. Cuántas veces puede aparecer cada hijo (suma en `sequence`, mín./máx. en `choice`, por las ocurrencias de la partícula) → `required`, arreglo con `minItems`/`maxItems`. Un `choice` que aparece una vez: «a lo sumo una rama» (`not`/`anyOf` de pares en `required`) y, si aparece siempre, «al menos una» | `xsd_a_json.py` |
+| JSON Schema → XSD | A mano. Objeto → `complexType`/`sequence` en el orden de `properties`; `$defs` + `$ref` → tipos con nombre (también recursivos); `allOf` se combina; `X o null` → `minOccurs="0"` | `json_a_xsd.py` |
+| `pattern` ↔ `xs:pattern` | Se vuelve a imprimir el árbol que ya construye `automata/expresiones.py` con la sintaxis del otro lado, con los conjuntos como rangos explícitos. Anclaje: XSD → `^(?:R)$`; ECMA → se quitan `^`/`$` de los extremos y se añade `[\s\S]*` donde no están | `patrones.py` |
+| Documento XML ↔ JSON | Guiado por el XSD (tipos y qué hijos se repiten), para probar las conversiones y para la web | `documentos.py` |
+
+**Convención XML ↔ JSON** (`convencion.py`): un elemento de tipo simple sin atributos es su valor (entero, número,
+booleano o cadena según el tipo); con atributos o hijos es un objeto, con `"@atributo"`, un miembro por hijo y `"$"` para
+el texto junto a atributos; un hijo que el modelo deja repetir es siempre un arreglo. El documento es el valor de la raíz
+(su nombre va en `title`); con varios elementos globales, un objeto con una sola propiedad. Sin equivalente: el orden de
+los hijos y los contenedores vacíos (`{}` se escribe como un elemento vacío, igual que `""`; `[]`, como ninguno).
+
+Lo que no se traduce y se avisa: en XSD → JSON, el orden y los `pattern` sobre tipos numéricos; `\d` de XSD (dígitos de
+todos los alfabetos) se escribe `\d` de ECMA ([0-9]). En JSON → XSD, `anyOf`/`oneOf` (salvo «X o null»), `not`, `if`,
+tipos unión, `additionalProperties` distinto de `false` (sin `xs:any` el XSD rechaza lo no declarado), `patternProperties`,
+`propertyNames`, `min/maxProperties`, `dependent*`, `uniqueItems`, `contains`, `prefixItems`, `multipleOf` (salvo 1, que da
+`xs:integer`), y los arreglos que no son valor de una propiedad (se escriben con hijos `<elemento>`).
+
+Desde `Código/`:
+
+```
+.venv\Scripts\python -m compilador.conversion inferir ej1.json ej2.json     # o .xml → XSD
+.venv\Scripts\python -m compilador.conversion xsd-a-json esquema.xsd
+.venv\Scripts\python -m compilador.conversion json-a-xsd esquema.json
+.venv\Scripts\python -m compilador.conversion xml-a-json esquema.xsd documento.xml
+.venv\Scripts\python -m compilador.conversion json-a-xml esquema.xsd documento.json
+```
+
+Web: pestaña **Conversión** y rutas `POST /api/inferir`, `/api/convertir`, `/api/convertir-documento`.
+
+Pruebas (`pruebas/test_conversion.py`): las expresiones traducidas reconocen las mismas cadenas (con los AFD del
+proyecto); todo documento válido según un XSD, pasado a JSON, cumple el JSON Schema convertido (oráculo `jsonschema`) y
+al menos el 85 % de los inválidos lo incumple (los demás solo cambian el orden); en los esquemas JSON que se traducen sin
+avisos, `jsonschema` y `xmlschema` dan el mismo veredicto sobre cada documento y su versión XML; ida y vuelta
+XSD → JSON → XSD; los ejemplos cumplen siempre el esquema inferido.

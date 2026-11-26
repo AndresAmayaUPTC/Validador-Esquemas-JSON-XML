@@ -2,3 +2,4 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pymongo>=4.6
+genson>=1.3

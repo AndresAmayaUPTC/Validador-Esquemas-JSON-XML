@@ -4,11 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Validador de esquemas con autómatas de pila</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
   <link rel="stylesheet" href="estilos.css">
 </head>
 <body>
   <header class="cabecera">
-    <h1><span class="sello" aria-hidden="true" title="Lenguajes Formales · UPTC">ΛF</span>Validación de esquemas JSON y XML con autómatas de pila ponderados</h1>
+    <h1><img class="sello" src="logo.svg" width="30" height="30" alt="" title="Lenguajes Formales · UPTC">Validación de esquemas JSON y XML con autómatas de pila ponderados</h1>
     <!-- La definición formal del autómata hace de barra de estado: se rellena al compilar. -->
     <p class="definicion" id="definicion" aria-live="polite">
       <i>M</i> = (<i>Q</i>, Σ, Γ, δ, <i>q</i><sub>0</sub>, <i>Z</i><sub>0</sub>, <i>F</i>, <i>w</i>)
@@ -49,6 +50,7 @@
         <button role="tab" id="t-arbol" aria-controls="p-arbol" aria-selected="false" tabindex="-1">Árbol de derivación</button>
         <button role="tab" id="t-comparacion" aria-controls="p-comparacion" aria-selected="false" tabindex="-1">Comparación</button>
         <button role="tab" id="t-casos" aria-controls="p-casos" aria-selected="false" tabindex="-1">Casos de prueba</button>
+        <button role="tab" id="t-conversion" aria-controls="p-conversion" aria-selected="false" tabindex="-1">Conversión</button>
       </div>
 
       <div class="panel" role="tabpanel" id="p-analisis" aria-labelledby="t-analisis">
@@ -70,6 +72,12 @@
             <option value="0">ninguna</option><option value="25">25 ms</option><option value="100" selected>100 ms</option>
             <option value="400">400 ms</option>
           </select></label>
+          <label title="Con un ritmo lento cada transición se ve por separado, con el token que la provoca y la pila que deja">
+            Recorrido <select id="ritmo">
+            <option value="bloque" selected>por bloques (rápido)</option><option value="500">lento: 0,5 s por transición</option>
+            <option value="1000">lento: 1 s por transición</option><option value="2000">lento: 2 s por transición</option>
+            <option value="manual">paso a paso (botón Siguiente)</option>
+          </select></label>
           <label><input type="checkbox" id="temprano"> Detener en la primera violación</label>
           <button id="wasm" hidden>Validar con WebAssembly en este navegador</button>
         </div>
@@ -86,8 +94,17 @@
         </div>
         <div id="recorrido" class="recorrido" hidden>
           <h3>Recorrido en el autómata</h3>
-          <p class="nota-recorrido">Actual en negro · visitados en amarillo pálido · última transición en ocre
-            (con bloques de 1 byte se ve cada una).</p>
+          <p class="nota-recorrido">Actual en negro · visitados en amarillo pálido · última transición en ocre.
+            Para seguirlo con calma, elige un <b>recorrido lento</b> o <b>paso a paso</b>: cada transición se muestra por
+            separado, con el token que la provoca (resaltado en la cinta) y la pila que deja.</p>
+          <div class="paso" id="paso" hidden>
+            <div class="paso-barra">
+              <p class="paso-actual" id="paso-actual" aria-live="polite"></p>
+              <button id="pausar">Pausar</button>
+              <button class="principal" id="siguiente" title="También con la flecha derecha">Siguiente paso →</button>
+            </div>
+            <ol class="historial" id="historial" aria-label="Últimas transiciones, la más reciente arriba"></ol>
+          </div>
           <div id="diagrama-recorrido"></div>
         </div>
         <div id="veredicto">
@@ -129,6 +146,26 @@
           <button>Guardar caso</button>
         </form>
         <div id="casos"></div>
+      </div>
+
+      <div class="panel" role="tabpanel" id="p-conversion" aria-labelledby="t-conversion" hidden>
+        <div class="controles">
+          <button id="convertir-esquema">Convertir el esquema</button>
+          <button id="inferir">Inferir un esquema del documento</button>
+          <button id="convertir-documento">Convertir el documento</button>
+        </div>
+        <details class="mas-ejemplos">
+          <summary>Más documentos de ejemplo para la inferencia</summary>
+          <textarea id="ejemplos-extra" spellcheck="false" autocomplete="off" aria-label="Más documentos de ejemplo"
+            placeholder="Otros documentos del mismo formato, separados por una línea con ---"></textarea>
+        </details>
+        <div id="conversion"><p class="vacio"><b>Convertir el esquema</b> pasa un XSD a JSON Schema o un JSON Schema a XSD.
+          <b>Inferir</b> deduce un esquema a partir del documento (y de los ejemplos de arriba, si los hay).
+          <b>Convertir el documento</b> pasa el documento de XML a JSON o al revés, guiado por el esquema.</p>
+          <p class="vacio">Convención XML ↔ JSON: un elemento con atributos o hijos es un objeto; cada atributo es la
+          propiedad <code>"@nombre"</code>, cada hijo la propiedad con su nombre y el texto junto a atributos,
+          <code>"$"</code>. Un hijo que puede repetirse es siempre un arreglo. Lo que el otro lenguaje no puede expresar
+          aparece en los avisos.</p></div>
       </div>
     </section>
   </main>

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="titulo">
+  <title id="titulo">Validador de esquemas con autómatas de pila</title>
+  <!-- Identidad UPTC: negro institucional (#1a1a1a) y amarillo institucional (#ffc72c), esquinas rectas.
+       Un autómata de pila en miniatura, dibujado como en la aplicación: el triángulo de JFLAP señala el
+       estado inicial, que tiene el aspecto del estado «actual» del recorrido (relleno negro, borde amarillo);
+       debajo, su pila, con la cima en amarillo como en la pestaña Validación y el fondo Z0 en gris. -->
+  <rect width="64" height="64" fill="#1a1a1a"/>
+  <path d="M12 11 L12 25 L22.5 18 Z" fill="#ffc72c"/>
+  <circle cx="35" cy="18" r="8.5" fill="#1a1a1a" stroke="#ffc72c" stroke-width="4"/>
+  <rect x="21" y="35" width="28" height="6" fill="#ffc72c"/>
+  <rect x="21" y="44" width="28" height="6" fill="#faf9f4"/>
+  <rect x="21" y="53" width="28" height="4" fill="#6b675d"/>
+</svg>

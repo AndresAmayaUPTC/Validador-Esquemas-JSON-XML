@@ -12,6 +12,9 @@ REST
   POST   /api/generar               casos de prueba generados desde el esquema
   POST   /api/crate                 el validador nativo como .zip (crate de Rust)
   POST   /api/wasm                  el validador nativo compilado a WebAssembly
+  POST   /api/inferir               esquema inferido a partir de documentos de ejemplo (JSON o XML)
+  POST   /api/convertir             XSD → JSON Schema o JSON Schema → XSD
+  POST   /api/convertir-documento   un documento XML a JSON o al revés, guiado por el esquema
   GET    /api/casos                 casos guardados   (POST crea, PUT reemplaza, DELETE borra)
   POST   /api/casos/{id}/ejecutar   ejecuta un caso y guarda el resultado y las métricas
 
@@ -64,6 +67,14 @@ class Generacion(Esquema):
 
 class Crate(Esquema):
     nombre: str = 'validador_generado'
+
+
+class Ejemplos(BaseModel):
+    documentos: list[str] = Field(min_length=1)
+
+
+class Documento(Esquema):
+    documento: str
 
 
 class Caso(BaseModel):
@@ -132,6 +143,19 @@ def crear_app(repositorio=None) -> FastAPI:
     @app.post('/api/wasm')
     def wasm(e: Esquema):
         return Response(nativo.wasm_de(e.esquema), media_type='application/wasm')
+
+    # ---------------- conversión ----------------
+    @app.post('/api/inferir')
+    def inferir(e: Ejemplos):
+        return servicio.inferir_esquema(e.documentos)
+
+    @app.post('/api/convertir')
+    def convertir(e: Esquema):
+        return servicio.convertir_esquema(e.esquema)
+
+    @app.post('/api/convertir-documento')
+    def convertir_documento(d: Documento):
+        return servicio.convertir_documento(d.esquema, d.documento)
 
     # ---------------- casos de prueba ----------------
     def _caso_o_404(id_):
@@ -214,12 +238,16 @@ def crear_app(repositorio=None) -> FastAPI:
             await ws.send_json({'tipo': 'listo'})
             recibido, vistas, total = bytearray(), 0, 0
             # cada transición de la ejecución principal, con los nombres de los estados: un bloque puede provocar
-            # varias (un número solo se cierra al llegar el carácter siguiente) y las últimas llegan con «fin»
+            # varias (un número solo se cierra al llegar el carácter siguiente) y las últimas llegan con «fin».
+            # «detalles» va en paralelo a «pasos»: el token que provocó cada una y la pila que dejó (para el
+            # recorrido lento de la interfaz, que las muestra de una en una)
             validador.recorrido = []
-            nombres = validador.a.estados
+            nombres, simbolos = validador.a.estados, validador.a.simbolos_pila
 
             def pasos():
-                hechos = [[nombres[desde], nombres[hacia]] for desde, hacia in validador.recorrido]
+                hechos = {'pasos': [[nombres[desde], nombres[hacia]] for desde, hacia, _, _ in validador.recorrido],
+                          'detalles': [{'token': t.tipo, 'inicio': t.inicio, 'fin': t.fin, 'pila': [simbolos[x] for x in pila]}
+                                       for _, _, t, pila in validador.recorrido]}
                 validador.recorrido.clear()
                 return hechos
             while True:
@@ -238,10 +266,10 @@ def crear_app(repositorio=None) -> FastAPI:
                     r = validador._r
                     nuevas = [{'byte': p, 'motivo': m, 'mensaje': servicio.MENSAJES.get(m, m)} for p, m in r.detalle[vistas:vistas + 50]]
                     vistas = len(r.detalle)
-                    await ws.send_json({'tipo': 'progreso', **validador.progreso(), 'nuevas': nuevas, 'pasos': pasos()})
+                    await ws.send_json({'tipo': 'progreso', **validador.progreso(), 'nuevas': nuevas, **pasos()})
                 elif json.loads(mensaje.get('text') or '{}').get('tipo') == 'fin':
                     r = validador.finish()
-                    await ws.send_json({'tipo': 'resultado', **servicio.resultado_a_dict(r, bytes(recibido)), 'pasos': pasos()})
+                    await ws.send_json({'tipo': 'resultado', **servicio.resultado_a_dict(r, bytes(recibido)), **pasos()})
                     return await ws.close()
         except WebSocketDisconnect:
             return

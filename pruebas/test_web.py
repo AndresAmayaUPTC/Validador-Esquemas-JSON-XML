@@ -247,7 +247,15 @@ def test_validacion_en_streaming(cliente):
         ws.send_json({'tipo': 'fin'})
         final = ws.receive_json()
     pasos_finales = final.pop('pasos')
+    detalles_finales = final.pop('detalles')
     assert final == {'tipo': 'resultado', **esperado}
+    # cada transición trae el token que la provocó y la pila que dejó: tokens en orden y la pila siempre con Z0
+    detalles = [x for p in progresos for x in p['detalles']] + detalles_finales
+    assert len(detalles) == sum(len(p['pasos']) for p in progresos) + len(pasos_finales)
+    assert all(d['pila'][0] == 'Z0' and d['inicio'] <= d['fin'] for d in detalles)
+    assert all(a['fin'] <= b['inicio'] for a, b in zip(detalles, detalles[1:]))
+    assert detalles[0]['token'] == 'LLAVE_ABRE' and detalles[-1]['token'] == 'FIN' and len(detalles[-1]['pila']) == 1
+    assert max(len(d['pila']) for d in detalles) == 3
     # el recorrido: cada transición sale de donde terminó la anterior, termina en ACEPTA, y el estado que informa
     # cada progreso es el de su última transición (un bloque puede traer varias, o ninguna)
     pasos = [x for p in progresos for x in p['pasos']] + pasos_finales
