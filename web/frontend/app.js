@@ -13,7 +13,7 @@ const ESTADOS = {
   malformado: 'Mal formado', limite: 'Límite superado',
 };
 const CATEGORIAS = {
-  valido: 'Válidos', invalido: 'Inválidos', malformado: 'Malformados', 'fuera-del-dpda': 'Fuera del DPDA puro',
+  sustentacion: 'Esquemas sencillos', valido: 'Válidos', invalido: 'Inválidos', malformado: 'Malformados', 'fuera-del-dpda': 'Fuera del DPDA puro',
   bombeo: 'Bombeo', extremo: 'Extremos',
 };
 const estado = { compilado: null, bytesFijos: null, salud: {}, wasm: null, generados: [] };
@@ -132,7 +132,9 @@ function prepararResaltado(svg) {
     const [de, a] = (g.querySelector('title')?.textContent ?? '').split('->');
     return { g, de, a };
   });
-  const nombre = (id) => (id === 'ret' ? '↩' : nodos.get(id)?.querySelector('text')?.textContent ?? id);
+  // el nombre del estado: un nombre largo de estados fusionados («A≡B≡C») viene partido en varias líneas
+  const nombre = (id) => (id === 'ret' ? '↩'
+    : [...(nodos.get(id)?.querySelectorAll('text') ?? [])].map((t) => t.textContent).join('') || id);
   for (const [id, g] of nodos) {
     const titulo = g.querySelector('title');
     if (!titulo) continue;
@@ -179,22 +181,24 @@ function prepararResaltado(svg) {
     for (const g of nodos.values()) g.classList.remove('actual', 'visitado');
     for (const x of aristas) x.g.classList.remove('recorrida', 'ultima');
   };
-  /** Marca el estado de nombre dado como actual. Devuelve su <g>, o null si no está en el diagrama. */
-  const marcar = (nombreDelEstado) => {
-    // sin nombre: el estado inicial (antes de leer nada, el progreso todavía no trae estado)
-    const id = nombreDelEstado == null
-      ? [...nodos].find(([, g]) => g.classList.contains('inicial'))?.[0]
-      : porNombre.get(nombreDelEstado);
-    if (id === undefined || id === enCurso) return id === undefined ? null : nodos.get(id);
+  const inicial = [...nodos].find(([, g]) => g.classList.contains('inicial'))?.[0];
+  /**
+   * Marca una transición: el estado «hacia» pasa a ser el actual y se resalta la arista tomada desde «desde»
+   * (directa, un lazo, o pasando por el punto de retorno ↩ si el diagrama lo agrupa). Sin «hacia» marca el
+   * estado inicial; sin «desde» se parte del estado actual. Devuelve el <g> del estado, o null si no está.
+   */
+  const marcar = (hacia, desde) => {
+    const id = hacia == null ? inicial : porNombre.get(hacia);
+    if (id === undefined) return null;
+    const origen = desde === undefined ? enCurso : porNombre.get(desde);
     for (const x of aristas) x.g.classList.remove('ultima');
-    if (enCurso !== null) {
-      nodos.get(enCurso).classList.replace('actual', 'visitado');
-      // la transición tomada: directa, o pasando por el punto de retorno ↩ si el diagrama lo agrupa
-      const directa = aristas.filter((x) => x.de === enCurso && x.a === id);
+    if (origen != null) {
+      const directa = aristas.filter((x) => x.de === origen && x.a === id);
       const tomadas = directa.length ? directa
-        : [...aristas.filter((x) => x.de === enCurso && x.a === 'ret'), ...aristas.filter((x) => x.de === 'ret' && x.a === id)];
+        : [...aristas.filter((x) => x.de === origen && x.a === 'ret'), ...aristas.filter((x) => x.de === 'ret' && x.a === id)];
       if (directa.length || tomadas.length === 2) for (const x of tomadas) x.g.classList.add('recorrida', 'ultima');
     }
+    if (enCurso !== null && enCurso !== id) nodos.get(enCurso).classList.replace('actual', 'visitado');
     enCurso = id;
     nodos.get(id).classList.remove('visitado');
     nodos.get(id).classList.add('actual');
@@ -331,12 +335,10 @@ async function dibujar(dot, destino, opciones = {}) {
     // seguir un recorrido: con un zoom en el que se lean las etiquetas, y moviendo la lámina hasta el estado
     // actual cuando se acerca al borde
     if (opciones.seguir && escala < 0.7) { modo = 'libre'; aplicar(0.7); }
-    const sinAnimaciones = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let ultimoCentrado = 0;
+    // desplazamiento instantáneo: con uno suave, el paso siguiente puede llegar mientras la animación sigue en
+    // curso y la lámina se queda a medio camino, con el estado actual fuera de la vista
+    const suave = 'auto';
     const centrar = (g) => {
-      // desplazamiento suave, salvo que los pasos lleguen tan seguidos que una animación interrumpiría a la otra
-      const ahora = performance.now();
-      const suave = sinAnimaciones || ahora - ultimoCentrado < 400 ? 'auto' : 'smooth';
       // la parte de la lámina que se ve de verdad: puede quedar cortada por el panel que la contiene o la ventana
       const r = lamina.getBoundingClientRect(), panel = lamina.closest('.panel')?.getBoundingClientRect();
       const vista = {
@@ -347,7 +349,6 @@ async function dibujar(dot, destino, opciones = {}) {
       const caja = g.getBoundingClientRect(), borde = 40;
       if (caja.left > vista.left + borde && caja.right < vista.right - borde
           && caja.top > vista.top + borde && caja.bottom < vista.bottom - borde) return;
-      ultimoCentrado = ahora;
       const limitar = (x, max) => Math.min(Math.max(0, x), max);
       const left = limitar(lamina.scrollLeft + caja.left + caja.width / 2 - (vista.left + vista.right) / 2, lamina.scrollWidth - lamina.clientWidth);
       const top = limitar(lamina.scrollTop + caja.top + caja.height / 2 - (vista.top + vista.bottom) / 2, lamina.scrollHeight - lamina.clientHeight);
@@ -358,8 +359,8 @@ async function dibujar(dot, destino, opciones = {}) {
       if (falta) lamina.closest('.panel')?.scrollBy({ top: falta, behavior: suave });
     };
     return {
-      marcar: (nombre) => {
-        const g = interaccion?.marcar(nombre);
+      marcar: (hacia, desde) => {
+        const g = interaccion?.marcar(hacia, desde);
         if (g && opciones.seguir && !arrastre) centrar(g);   // si el usuario está arrastrando, no se le quita la vista
       },
       reiniciar: () => interaccion?.reiniciar(),
@@ -472,7 +473,7 @@ function pintarAutomata(a) {
     <div id="diagrama">${a.dot ? '<p class="vacio">Dibujando…</p>'
       : `<p class="vacio">Con ${a.tamano.estados} estados el diagrama no se lee; la tabla de transiciones está debajo.</p>`}</div>
     ${a.dot ? `<div class="leyenda-diagrama" aria-label="Leyenda del diagrama">
-      <span><i class="l-estado l-inicial"></i>estado inicial</span>
+      <span><i class="l-entrada">▷</i><i class="l-estado l-inicial"></i>estado inicial q₀</span>
       <span><i class="l-estado l-final"></i>estado de aceptación</span>
       <span><i class="l-linea"></i>lee un símbolo y avanza</span>
       <span><i class="l-linea l-violacion"></i>solo suma violaciones (w &gt; 0); el detalle, al pasar el puntero</span>
@@ -617,6 +618,20 @@ async function prepararRecorrido() {
   return estado.recorrido.control;
 }
 
+/**
+ * Lleva el diagrama por las transiciones que trae un mensaje del servidor ([desde, hacia] cada una). Si un bloque
+ * provocó varias, se ven una tras otra, repartiendo la pausa entre ellas (como mucho 150 ms cada una).
+ */
+async function recorrer(recorrido, mensaje, pausa) {
+  if (!recorrido) return;
+  const pasos = mensaje.pasos;
+  if (!pasos) return recorrido.marcar(mensaje.estado_del_automata);   // un servidor sin la lista de pasos
+  for (let i = 0; i < pasos.length; i++) {
+    recorrido.marcar(pasos[i][1], pasos[i][0]);
+    if (i < pasos.length - 1 && pausa) await esperar(Math.min(150, pausa / pasos.length));
+  }
+}
+
 let cancelarStreaming = null;
 async function validarPorBloques() {
   if (cancelarStreaming) return cancelarStreaming();
@@ -645,12 +660,14 @@ async function validarPorBloques() {
     pintarMaquina({ bytes: 0, violaciones: 0, profundidad: 0, profundidad_maxima: 0, estado_del_automata: '—', ruta: '', pila: ['Z0'] }, bytes);
     const recorrido = await prepararRecorrido();
     recorrido?.marcar(null);   // empieza en el estado inicial
+    let ultimo = null;   // el último progreso: al cerrar se repinta con el estado al que llevan los pasos finales
     for (let i = 0; i < bytes.length && !cancelado; i += tamano) {
       canal.ws.send(bytes.subarray(i, i + tamano));
       const p = await canal.siguiente();
       if (p.tipo !== 'progreso') return aviso('aviso-documento', p.mensaje ?? 'El servidor cerró la conexión.', true);
+      ultimo = p;
       pintarMaquina(p, bytes);
-      recorrido?.marcar(p.estado_del_automata);
+      await recorrer(recorrido, p, pausa);
       for (const v of p.nuevas) {
         $('en-vivo').insertAdjacentHTML('beforeend', `<li><span class="donde">${enlaceA('documento', v, `byte ${v.byte}`)}</span>${html(v.mensaje)}</li>`);
       }
@@ -662,6 +679,9 @@ async function validarPorBloques() {
     canal.ws.send(JSON.stringify({ tipo: 'fin' }));
     const final = await canal.siguiente();
     if (final.tipo === 'resultado') {
+      await recorrer(recorrido, final, pausa);   // lo que solo se decide al cerrar: el último token y FIN → ACEPTA
+      // el contador «Estado» también: sin esto seguiría en el estado del último bloque (por ejemplo V1 con «3.8»)
+      if (ultimo && final.pasos?.length) pintarMaquina({ ...ultimo, estado_del_automata: final.pasos.at(-1)[1] }, bytes);
       pintarVeredicto(final);
       aviso('aviso-documento', `${ESTADOS[final.estado]}: ${textoDeVeredicto(final)}.`, !['valido', 'pendiente'].includes(final.estado));
     }
@@ -1019,6 +1039,7 @@ for (const [valor, nombre] of Object.entries(CATEGORIAS)) {
   $('categoria').add(new Option(nombre, valor));
   $('categoria-caso').add(new Option(nombre, valor));
 }
+$('categoria-caso').value = 'valido';   // al guardar un caso nuevo, por defecto entre los válidos
 
 /** Deja el selector de formato en «json» o «xml» y ofrece los ejemplos de ese formato. */
 function elegirFormato(formato) {

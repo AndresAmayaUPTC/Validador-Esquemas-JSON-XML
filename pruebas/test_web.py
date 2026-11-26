@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from compilador.automata.compilar import compilar
 from compilador.automata.interprete import validar
+from compilador.formatos import compilar_esquema
 from web.backend import nativo, sembrar
 from web.backend.app import crear_app
 from web.backend.repositorio import CATEGORIAS, RepositorioArchivos, RepositorioMongo
@@ -165,11 +166,11 @@ def test_almacen_de_casos(repositorio):
 
 
 def test_sembrar_los_casos_de_la_propuesta(repositorio):
-    assert len(sembrar.CASOS) == 26 and len(sembrar.CASOS_XML) == 23
+    assert len(sembrar.CASOS) == 26 and len(sembrar.CASOS_XML) == 23 and len(sembrar.CASOS_SUSTENTACION) == 19
     # un caso sembrado con un nombre que ya no existe y otro creado a mano por la API
     repositorio.guardar({'_id': sembrar.identificador('Patrón sin verificar'), 'nombre': 'Patrón sin verificar'})
     repositorio.guardar({'_id': 'amano', 'nombre': 'Creado por la API', 'categoria': 'valido'})
-    assert sembrar.sembrar(repositorio) == (49, 1)
+    assert sembrar.sembrar(repositorio) == (68, 1)
     assert repositorio.obtener('amano') is not None   # lo que no es de la siembra no se toca
     repositorio.borrar('amano')
     casos = repositorio.listar()
@@ -184,15 +185,22 @@ def test_sembrar_los_casos_de_la_propuesta(repositorio):
     assert estados['Árbol con k = 60'] == ('valido', 0) and estados['Arreglo de 20 000 números'] == ('valido', 0)
     assert estados['Profundidad sobre el límite'][0] == 'limite' and estados['Números enormes'] == ('invalido', 1)
     repositorio.guardar(casos[0] | {'ultimo': {'estado': 'valido'}})
-    assert sembrar.sembrar(repositorio) == (49, 0)                 # sembrar otra vez no duplica ni borra métricas
-    assert len(repositorio.listar()) == 49 and repositorio.obtener(casos[0]['_id'])['ultimo'] == {'estado': 'valido'}
+    assert sembrar.sembrar(repositorio) == (68, 0)                 # sembrar otra vez no duplica ni borra métricas
+    assert len(repositorio.listar()) == 68 and repositorio.obtener(casos[0]['_id'])['ultimo'] == {'estado': 'valido'}
     # los de XML: las mismas categorías, y los ataques con DOCTYPE se rechazan como mal formados en el byte 2
     de_xml = [c for c in casos if c['lenguaje'] == 'xml']
-    assert len(de_xml) == 23 and {c['categoria'] for c in de_xml} == set(CATEGORIAS)
+    assert len(de_xml) == 29 and {c['categoria'] for c in de_xml} == set(CATEGORIAS)
     assert estados['XML: DOCTYPE con entidad externa (XXE)'] == estados['XML: expansión de entidades'] == ('malformado', 0)
     assert estados['XML: varias violaciones'] == ('invalido', 8) and estados['XML: pattern que no casa'] == ('invalido', 1) \
         and estados['XML: pattern no regular'] == ('pendiente', 0)
     assert estados['XML: profundidad sobre el límite'][0] == 'limite' and estados['XML: decimales enormes'] == ('valido', 0)
+    # los de la sustentación: autómatas pequeños y un veredicto de cada clase
+    sustentacion = {c['nombre']: c for c in casos if c['categoria'] == 'sustentacion'}
+    assert len(sustentacion) == 19 and casos[0]['categoria'] == 'sustentacion'   # se listan primero
+    assert {estados[n][0] for n in sustentacion} == {'valido', 'invalido', 'malformado'}
+    assert all(compilar_esquema(c['esquema'].encode()).tamano['estados'] <= 22 for c in sustentacion.values())
+    assert estados['Lista sin cerrar'] == estados['Matriz con un ] de más'] == estados['XML: cierre que no coincide'] == ('malformado', 0)
+    assert estados['Punto sin y'] == estados['XML: edad 300'] == ('invalido', 1) and estados['Matriz 2 × 2'] == ('valido', 0)
 
 
 def test_casos_por_la_api(cliente):
@@ -238,7 +246,15 @@ def test_validacion_en_streaming(cliente):
             progresos.append(ws.receive_json())
         ws.send_json({'tipo': 'fin'})
         final = ws.receive_json()
+    pasos_finales = final.pop('pasos')
     assert final == {'tipo': 'resultado', **esperado}
+    # el recorrido: cada transición sale de donde terminó la anterior, termina en ACEPTA, y el estado que informa
+    # cada progreso es el de su última transición (un bloque puede traer varias, o ninguna)
+    pasos = [x for p in progresos for x in p['pasos']] + pasos_finales
+    assert pasos[0][0] == 'V1' and pasos[-1] == ['FIN', 'ACEPTA'] and pasos_finales[-1] == ['FIN', 'ACEPTA']
+    assert all(a[1] == b[0] for a, b in zip(pasos, pasos[1:]))
+    assert all(p['pasos'][-1][1] == p['estado_del_automata'] for p in progresos if p['pasos'])
+    assert any(len(p['pasos']) > 1 for p in progresos)
     assert [p['bytes'] for p in progresos] == [min(i + 7, len(documento)) for i in range(0, len(documento), 7)]
     assert [p['violaciones'] for p in progresos] == sorted(p['violaciones'] for p in progresos)   # solo crecen
     assert sum(len(p['nuevas']) for p in progresos) == esperado['violaciones'] == 2

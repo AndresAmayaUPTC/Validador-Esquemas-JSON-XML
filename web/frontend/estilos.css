@@ -224,6 +224,9 @@ ul.lista li { padding: 6px 0; border-bottom: 1px solid var(--regla); }
 
 /* resaltado de un estado: sus transiciones y vecinos quedan, el resto se atenúa */
 .lamina.interactiva g.node:not(.inicio) { cursor: pointer; }
+/* estado inicial como en JFLAP: solo queda el triángulo que toca q0 */
+.lamina g.edge.inicio path { display: none; }
+.lamina g.edge.inicio polygon { fill: #faf9f4; }
 .lamina.interactiva g.node:hover ellipse, .lamina.interactiva g.node:hover polygon { stroke-width: 2.4px; }
 .lamina g.node, .lamina g.edge { transition: opacity 0.15s ease; }
 .lamina svg.con-foco g.node:not(.foco):not(.vecino),
@@ -258,6 +261,7 @@ ul.lista li { padding: 6px 0; border-bottom: 1px solid var(--regla); }
 .leyenda-diagrama i { font-style: normal; flex: none; }
 .l-estado { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--tinta); background: var(--superficie); }
 .l-inicial { background: var(--amarillo); border-color: var(--negro); }
+.l-entrada { margin-right: -6px; font-size: 1.05rem; line-height: 1; color: var(--tinta); }
 .l-final { box-shadow: 0 0 0 2px var(--superficie), 0 0 0 3.5px var(--tinta); }
 .l-linea { width: 22px; height: 0; border-top: 1.5px solid var(--tinta-suave); }
 .l-retorno { border-top-style: dashed; }

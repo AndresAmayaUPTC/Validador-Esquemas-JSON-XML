@@ -249,6 +249,49 @@ CASOS_XML = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Sustentación: esquemas pequeños (11 a 22 estados) cuyo autómata se lee entero en el diagrama
+# ---------------------------------------------------------------------------
+NOTA = {'type': 'number', 'minimum': 0, 'maximum': 5}
+SEMAFORO = {'enum': ['rojo', 'amarillo', 'verde']}
+LISTA = {'type': 'array', 'items': {'type': 'integer'}}
+MATRIZ = {'type': 'array', 'items': LISTA}
+PUNTO = {'type': 'object', 'properties': {'x': {'type': 'integer'}, 'y': {'type': 'integer'}},
+         'required': ['x', 'y'], 'additionalProperties': False}
+SALUDO_XSD = _XSD.format('  <xs:element name="saludo" type="xs:string"/>')
+EDAD_XSD = _XSD.format('  <xs:element name="edad" type="xs:unsignedByte"/>')
+PUNTO_XSD = _XSD.format('''  <xs:element name="punto">
+    <xs:complexType>
+      <xs:attribute name="x" type="xs:int" use="required"/>
+      <xs:attribute name="y" type="xs:int" use="required"/>
+    </xs:complexType>
+  </xs:element>''')
+
+# (nombre, categoría, esquema, payload en bytes, notas)
+CASOS_SUSTENTACION = [
+    ('Nota válida', 'sustentacion', NOTA, b'3.8', 'número entre 0 y 5: un valor suelto, la pila no se usa'),
+    ('Nota mayor que 5', 'sustentacion', NOTA, b'5.5', 'viola maximum: comparación decimal sobre el lexema'),
+    ('Nota como texto', 'sustentacion', NOTA, b'"cuatro"', 'tipo incorrecto: se espera un número'),
+    ('Semáforo en verde', 'sustentacion', SEMAFORO, b'"verde"', 'enum: AFD de los valores permitidos'),
+    ('Semáforo en azul', 'sustentacion', SEMAFORO, b'"azul"', 'valor que no está en el enum'),
+    ('Lista de enteros', 'sustentacion', LISTA, b'[1, 2, 3]', 'apila al abrir [ y desapila al cerrar ]'),
+    ('Lista con un texto', 'sustentacion', LISTA, b'[1, "dos", 3]', 'un elemento de otro tipo suma una violación'),
+    ('Lista sin cerrar', 'sustentacion', LISTA, b'[1, 2, 3', 'termina con la pila sin vaciar: mal formado'),
+    ('Matriz 2 × 2', 'sustentacion', MATRIZ, b'[[1, 2], [3, 4]]', 'arreglos anidados: dos niveles de pila'),
+    ('Matriz con un ] de más', 'sustentacion', MATRIZ, b'[[1, 2], [3, 4]]]', 'cierre sin apertura: la pila ya está en Z0'),
+    ('Punto completo', 'sustentacion', PUNTO, b'{"x": 3, "y": -1}', 'objeto con dos propiedades obligatorias'),
+    ('Punto sin y', 'sustentacion', PUNTO, b'{"x": 3}', 'required: máscara de bits en el marco de pila'),
+    ('Punto con z', 'sustentacion', PUNTO, b'{"x": 1, "y": 2, "z": 3}', 'additionalProperties: false rechaza la clave z'),
+    ('XML: saludo', 'sustentacion', SALUDO_XSD, b'<saludo>Hola</saludo>', 'el XML más sencillo: un elemento de texto'),
+    ('XML: cierre que no coincide', 'sustentacion', SALUDO_XSD, b'<saludo>Hola</despedida>',
+     'la etiqueta de cierre no es la de la cima de la pila: mal formado'),
+    ('XML: edad 30', 'sustentacion', EDAD_XSD, b'<edad>30</edad>', 'xs:unsignedByte: entero entre 0 y 255'),
+    ('XML: edad 300', 'sustentacion', EDAD_XSD, b'<edad>300</edad>', 'fuera del rango de xs:unsignedByte'),
+    ('XML: punto con atributos', 'sustentacion', PUNTO_XSD, b'<punto x="3" y="-1"/>', 'dos atributos obligatorios'),
+    ('XML: punto sin y', 'sustentacion', PUNTO_XSD, b'<punto x="3"/>', 'falta un atributo obligatorio'),
+]
+
+
 # casos que existieron con otro nombre: ya no se siembran y se borran del almacén
 RETIRADOS = ('Patrón sin verificar', 'uniqueItems sin verificar', 'Sin comprobaciones diferidas',
              'XML: pattern sin verificar', 'XML: lo demás sí se verifica')
@@ -262,7 +305,7 @@ def identificador(nombre: str) -> str:
 def casos() -> list:
     """Los casos como documentos listos para guardar, con el resultado esperado ya calculado."""
     documentos, compilados = [], {}
-    for nombre, categoria, esquema, payload, notas in CASOS + CASOS_XML:
+    for nombre, categoria, esquema, payload, notas in CASOS + CASOS_XML + CASOS_SUSTENTACION:
         texto = esquema if isinstance(esquema, str) else json.dumps(esquema, ensure_ascii=False, indent=2)
         if texto not in compilados:
             compilados[texto] = compilar_esquema(texto.encode('utf-8'))

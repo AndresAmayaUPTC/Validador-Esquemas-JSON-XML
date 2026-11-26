@@ -101,6 +101,7 @@ class ValidadorXML:
         self._bytes = 0
         self._r = Resultado('valido')
         self._terminado = False
+        self.recorrido = None       # lista de (estado antes, estado después) si se pide, como en el de JSON
 
     def feed(self, bloque: bytes):
         if self._terminado:
@@ -137,7 +138,10 @@ class ValidadorXML:
         for token in tokens:
             if self._terminado:
                 return
+            antes = self._estado
             self._paso(token)
+            if self.recorrido is not None and (not self._terminado or self._r.estado == 'invalido'):
+                self.recorrido.append((antes, self._estado))   # la transición ocurrió (no la cortó un error)
         if error is not None:
             self._detener('malformado', error.pos, 'léxico: ' + str(error))
 

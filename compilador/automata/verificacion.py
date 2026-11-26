@@ -174,11 +174,17 @@ def minimizar(a: Automata) -> Automata:
         if bz[z] not in representante_z:
             representante_z[bz[z]] = z
             m.simbolo(a.simbolos_pila[z], a.clase_pila[z])
-    representante_q = {}
+    representante_q, miembros = {}, {}
     for q in vivos:
+        miembros.setdefault(bq[q], []).append(a.estados[q])
         if bq[q] not in representante_q:
             representante_q[bq[q]] = q
             m.estado(a.estados[q])
+    # un estado que resulta de fusionar varios indistinguibles se nombra con todos ellos («DP2≡DP3»): con el
+    # nombre de uno solo, la transición de otro parecería ir a un estado ajeno (clave "y" → DP2)
+    for bloque, nombres in miembros.items():
+        if len(nombres) > 1:
+            m.estados[bloque] = '≡'.join(dict.fromkeys(nombres))
     mapa_z = lambda z: None if z is None else bz[z]
     for bloque, q in representante_q.items():
         m.delta[bloque] = {s: replace(t, destino=None if t.destino is RETORNO else bq[t.destino],

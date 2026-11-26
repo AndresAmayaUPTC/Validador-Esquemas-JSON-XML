@@ -11,7 +11,7 @@ import jsonschema
 import pytest
 
 from compilador.automata import nodos as modulo_nodos
-from compilador.automata.compilar import ErrorDeEsquema, a_dot, compilar, describir
+from compilador.automata.compilar import ErrorDeEsquema, a_dot, compilar, describir, filas_delta
 from compilador.automata.dpda import Transicion, construir
 from compilador.automata.formas import costo
 from compilador.automata.interprete import validar
@@ -435,6 +435,11 @@ def test_minimizar_fusiona_estados_equivalentes():
     assert c.tamano['simbolos_de_entrada'] == 12 + 40 + 1   # los tokens, una clave por propiedad y «otra clave»
     distintas = {'type': 'object', 'properties': {f'p{i}': {'type': 'string', 'maxLength': i} for i in range(40)}}
     assert compilado(distintas).tamano['estados'] > 80   # aquí cada propiedad necesita sus estados
+    # el estado fusionado se nombra con todos los que reúne: la clave "y" no va a un estado llamado como el de "x"
+    punto = compilado({'type': 'object', 'properties': {'x': {'type': 'integer'}, 'y': {'type': 'integer'}}})
+    destinos = {f['simbolo']: f['destino'] for f in filas_delta(punto) if f['estado'] == 'OI1'}
+    assert destinos['clave "x"'] == destinos['clave "y"'] == 'DP2≡DP3' and 'V2≡V3' in punto.automata.estados
+    assert not any('≡' in n for n in compilado(distintas).automata.estados)   # sin fusiones, los nombres de siempre
 
 
 def test_tamano_y_descripcion():

@@ -109,15 +109,19 @@ def test_validacion_en_streaming_de_xml(cliente):
     with cliente.websocket_connect('/ws/validar') as ws:
         ws.send_json({'tipo': 'inicio', 'esquema': XSD})
         assert ws.receive_json() == {'tipo': 'listo'}
-        profundidades = []
+        profundidades, pasos = [], []
         for i in range(0, len(datos), 40):
             ws.send_bytes(datos[i:i + 40])
             progreso = ws.receive_json()
             assert progreso['tipo'] == 'progreso' and progreso['pila'][0] == 'Z0'
             profundidades.append(progreso['profundidad'])
+            pasos += progreso['pasos']
         ws.send_json({'tipo': 'fin'})
         r = ws.receive_json()
     assert (r['tipo'], r['estado'], r['violaciones']) == ('resultado', 'valido', 0) and max(profundidades) == 3
+    # el recorrido es una cadena continua de transiciones que termina en ACEPTA al cerrar
+    pasos += r['pasos']
+    assert all(a[1] == b[0] for a, b in zip(pasos, pasos[1:])) and pasos[-1][1] == 'ACEPTA'
     with cliente.websocket_connect('/ws/validar') as ws:
         ws.send_json({'tipo': 'inicio', 'esquema': XSD})
         ws.receive_json()

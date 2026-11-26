@@ -222,6 +222,9 @@ class Validador:
         self._huellas = _usa_huellas(automata)
         self._contenedores, self._guardadas = [], 0
         self._ultima, self._cerrado = 0, None
+        # si es una lista, cada transición de la ejecución principal se anota como (estado antes, estado después):
+        # la interfaz la usa para dibujar el recorrido, porque un bloque puede provocar varias transiciones
+        self.recorrido = None
         self._bytes = 0
         self._r = Resultado('valido')
         self._terminado = False
@@ -274,7 +277,10 @@ class Validador:
         for token in tokens:
             if self._terminado:
                 return
+            antes = self._estado
             self._token(token)
+            if self.recorrido is not None and (not self._terminado or self._r.estado == 'invalido'):
+                self.recorrido.append((antes, self._estado))   # la transición ocurrió (no la cortó un error)
         if error is not None:
             self._detener('malformado', error.pos, 'léxico: ' + str(error))
 

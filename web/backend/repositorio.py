@@ -21,7 +21,7 @@ import os
 import uuid
 from pathlib import Path
 
-CATEGORIAS = ('valido', 'invalido', 'malformado', 'fuera-del-dpda', 'bombeo', 'extremo')
+CATEGORIAS = ('sustentacion', 'valido', 'invalido', 'malformado', 'fuera-del-dpda', 'bombeo', 'extremo')
 CARPETA_POR_DEFECTO = Path(__file__).resolve().parents[1] / 'datos' / 'casos'
 ENV = Path(__file__).resolve().parents[2] / '.env'
 

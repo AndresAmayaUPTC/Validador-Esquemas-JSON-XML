@@ -213,6 +213,15 @@ def crear_app(repositorio=None) -> FastAPI:
                 return await ws.close()
             await ws.send_json({'tipo': 'listo'})
             recibido, vistas, total = bytearray(), 0, 0
+            # cada transición de la ejecución principal, con los nombres de los estados: un bloque puede provocar
+            # varias (un número solo se cierra al llegar el carácter siguiente) y las últimas llegan con «fin»
+            validador.recorrido = []
+            nombres = validador.a.estados
+
+            def pasos():
+                hechos = [[nombres[desde], nombres[hacia]] for desde, hacia in validador.recorrido]
+                validador.recorrido.clear()
+                return hechos
             while True:
                 mensaje = await ws.receive()
                 if mensaje['type'] == 'websocket.disconnect':
@@ -229,10 +238,10 @@ def crear_app(repositorio=None) -> FastAPI:
                     r = validador._r
                     nuevas = [{'byte': p, 'motivo': m, 'mensaje': servicio.MENSAJES.get(m, m)} for p, m in r.detalle[vistas:vistas + 50]]
                     vistas = len(r.detalle)
-                    await ws.send_json({'tipo': 'progreso', **validador.progreso(), 'nuevas': nuevas})
+                    await ws.send_json({'tipo': 'progreso', **validador.progreso(), 'nuevas': nuevas, 'pasos': pasos()})
                 elif json.loads(mensaje.get('text') or '{}').get('tipo') == 'fin':
                     r = validador.finish()
-                    await ws.send_json({'tipo': 'resultado', **servicio.resultado_a_dict(r, bytes(recibido))})
+                    await ws.send_json({'tipo': 'resultado', **servicio.resultado_a_dict(r, bytes(recibido)), 'pasos': pasos()})
                     return await ws.close()
         except WebSocketDisconnect:
             return

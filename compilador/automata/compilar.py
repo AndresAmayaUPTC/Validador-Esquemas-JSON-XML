@@ -190,6 +190,19 @@ def _escapar_dot(s: str) -> str:
     return s.replace('\\', '\\\\').replace('"', '\\"')
 
 
+def _nombre_dot(nombre: str, ancho=12) -> str:
+    """El nombre de un estado para el diagrama. Los que fusionan varios («A≡B≡C») se parten en líneas por los ≡,
+    que quedan al final de cada línea: uniendo las líneas sale el nombre completo."""
+    lineas, actual = [], ''
+    for parte in nombre.split('≡'):
+        if actual and len(actual) + len(parte) > ancho:
+            lineas.append(actual)
+            actual = ''
+        actual += parte + '≡'
+    lineas.append(actual[:-1])
+    return '\\n'.join(_escapar_dot(x) for x in lineas)
+
+
 def _etiqueta_dot(pares) -> str:
     """Une en una línea los símbolos con el mismo efecto («CADENA, NUMERO, NULL [w=1]») y alinea las líneas a la
     izquierda (\\l de Graphviz)."""
@@ -209,10 +222,13 @@ def a_dot(c: Compilado, agrupar_retornos=True) -> str:
               f'  node [fontname="Helvetica", fontsize=10, shape=circle, style=filled, fillcolor="white", '
               f'color="{_TINTA}", fontcolor="{_TINTA}", penwidth=1.3, width=0.5, margin=0.03];',
               f'  edge [fontname="Helvetica", fontsize=8, color="{_SUAVE}", fontcolor="#3d3a33", arrowsize=0.6];',
-              f'  ini [shape=point, width=0.09, class="inicio"];',
-              f'  ini -> q{a.inicial} [color="{_TINTA}", penwidth=1.3, class="inicio"];']
+              # estado inicial como en JFLAP: un triángulo que toca q0 por la izquierda (la punta de la flecha de
+              # entrada; la interfaz web oculta su trazo y el punto de partida, que no es un estado)
+              f'  ini [shape=point, width=0.01, style=invis, class="inicio"];',
+              f'  ini -> q{a.inicial} [arrowhead=onormal, arrowsize=2.2, color="{_TINTA}", penwidth=1.3, '
+              f'class="inicio"];']
     for q, nombre in enumerate(a.estados):
-        atributos, clases = [f'label="{_escapar_dot(nombre)}"'], ['estado']
+        atributos, clases = [f'label="{_nombre_dot(nombre)}"'], ['estado']
         if q in a.finales:
             atributos.append('shape=doublecircle')
             clases.append('final')
